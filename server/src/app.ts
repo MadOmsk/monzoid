@@ -739,7 +739,15 @@ export function buildApp(options: AppOptions) {
     assertWritable(db, ctx.ledgerId, date, recalc && ctx.isAdmin);
   }
 
-  function normalizeEntry(ctx: { ledgerId: number; userId: number; isAdmin: boolean }, body: z.infer<typeof EntryBody>) {
+  /** Фонд этой базы и не в архиве; keep: фонд, который у записи уже был (старую запись архивного фонда можно править) */
+  function usableFund(ledgerId: number, fundId: number, keep: number | null = null): boolean {
+    const fund = get<{ archived: number }>(db, 'SELECT archived FROM funds WHERE id = ? AND ledger_id = ?', fundId, ledgerId);
+    if (!fund) return false;
+    if (fund.archived && fundId !== keep) throw new DomainError('Фонд в архиве: выбери другой или верни фонд из архива.');
+    return true;
+  }
+
+  function normalizeEntry(ctx: { ledgerId: number; userId: number; isAdmin: boolean }, body: z.infer<typeof EntryBody>, keepFundId: number | null = null) {
     if (body.kind === 'income') {
       if (!ctx.isAdmin) throw new DomainError('Доходы вносит администратор', 403);
       if (body.amount <= 0) throw new DomainError('Доход должен быть больше нуля.');
@@ -754,7 +762,7 @@ export function buildApp(options: AppOptions) {
     }
     // Расход по активу (агентские, нотариус) может идти без фонда: тогда он списывается прямо из свободных
     const assetOnly = !body.fundId && !!body.potId;
-    if (!assetOnly && (!body.fundId || !get(db, 'SELECT 1 x FROM funds WHERE id = ? AND ledger_id = ?', body.fundId, ctx.ledgerId))) {
+    if (!assetOnly && (!body.fundId || !usableFund(ctx.ledgerId, body.fundId, keepFundId))) {
       throw new DomainError('Выбери фонд или актив.');
     }
     // Расход участника всегда копит долг базы перед ним; администратор может указать, кто платил
@@ -818,7 +826,7 @@ export function buildApp(options: AppOptions) {
     const id = Number((req.params as any).id);
     const body = EntryBody.parse(req.body);
     const old = ownedEntry(ctx, id);
-    const e = normalizeEntry(ctx, body);
+    const e = normalizeEntry(ctx, body, get<{ fund_id: number | null }>(db, 'SELECT fund_id FROM entries WHERE id = ?', id)?.fund_id ?? null);
     const before = snapshot(db, 'entry', id) as EntryState;
     const potId = e.potId === undefined ? (before.potId ?? null) : e.potId;
     const refundOf = e.refundOf === undefined ? (before.refundOf ?? null) : e.refundOf;
@@ -864,7 +872,7 @@ export function buildApp(options: AppOptions) {
     const remove = new Set(normalizeTags(body.removeTags));
     const editing = body.addTags.length > 0 || remove.size > 0 || body.fundId !== undefined || body.comment !== undefined || body.amount !== undefined;
     if (!body.delete && !editing) throw new DomainError('Выбери, что изменить.');
-    if (body.fundId !== undefined && !get(db, 'SELECT 1 x FROM funds WHERE id = ? AND ledger_id = ?', body.fundId, ctx.ledgerId)) throw new DomainError('Фонд не найден', 404);
+    if (body.fundId !== undefined && !usableFund(ctx.ledgerId, body.fundId)) throw new DomainError('Фонд не найден', 404);
     return tx(db, () => {
       const plan = ids.map((id) => {
         ownedEntry(ctx, id);

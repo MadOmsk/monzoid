@@ -39,6 +39,23 @@ async function ledger(call: ReturnType<typeof setup>['call']) {
   return { base, fund };
 }
 
+describe('архивный фонд', () => {
+  it('новый расход в архивный фонд не проходит, старую запись в нём можно править', async () => {
+    const { call, db } = setup();
+    const { base, fund } = await ledger(call);
+    const old = (await call(1, 'POST', `${base}/entries`, { date: '2026-10-05', kind: 'expense', amount: k(100), fundId: fund('Подарки') })).body.id;
+    // Фонд с остатком в архив уходит через перенос остатка; здесь важен только сам признак архива
+    db.prepare('UPDATE funds SET archived = 1 WHERE id = ?').run(fund('Подарки'));
+    const added = await call(1, 'POST', `${base}/entries`, { date: '2026-10-06', kind: 'expense', amount: k(50), fundId: fund('Подарки') });
+    expect(added.status).toBe(400);
+    expect(added.body.error).toContain('в архиве');
+    expect((await call(1, 'PUT', `${base}/entries/${old}`, { date: '2026-10-05', kind: 'expense', amount: k(100), fundId: fund('Подарки'), comment: 'цветы' })).status).toBe(200);
+    const other = (await call(1, 'POST', `${base}/entries`, { date: '2026-10-07', kind: 'expense', amount: k(10), fundId: fund('Еда') })).body.id;
+    expect((await call(1, 'PUT', `${base}/entries/${other}`, { date: '2026-10-07', kind: 'expense', amount: k(10), fundId: fund('Подарки') })).status).toBe(400);
+    expect((await call(1, 'POST', `${base}/entries/bulk`, { ids: [other], fundId: fund('Подарки') })).status).toBe(400);
+  });
+});
+
 describe('фильтры операций', () => {
   it('доходы по источнику как в статистике, расходы по тому, кто платил', async () => {
     const { call } = setup();

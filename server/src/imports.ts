@@ -483,7 +483,9 @@ export function applyDecisions(db: Db, ledgerId: number, batchId: number, actor:
         // Списание это расход, зачисление по фонду это возврат с минусом
         const sign = effective < 0 ? 1 : -1;
         for (const part of d.parts) {
-          if (!get(db, 'SELECT 1 x FROM funds WHERE id = ? AND ledger_id = ?', part.fundId, ledgerId)) {
+          const fund = get<{ archived: number }>(db, 'SELECT archived FROM funds WHERE id = ? AND ledger_id = ?', part.fundId, ledgerId);
+          if (fund?.archived) throw new DomainError(`«${row.details}»: фонд в архиве, выбери другой.`);
+          if (!fund) {
             throw new DomainError('Фонд не найден', 404);
           }
           const entryId = run(
