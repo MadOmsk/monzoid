@@ -1,0 +1,4 @@
+# Сервер на Linux: в рабочей копии всегда LF, иначе скрипты выкладки ломаются
+* text=auto eol=lf
+*.png binary
+*.ico binary

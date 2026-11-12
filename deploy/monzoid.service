@@ -1,0 +1,25 @@
+[Unit]
+Description=Monzoid
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=monzoid
+WorkingDirectory=/opt/monzoid/server
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=3000
+Environment=DB_PATH=/var/lib/monzoid/monzoid.db
+StateDirectory=monzoid
+StateDirectoryMode=0700
+ExecStart=/opt/monzoid/node_modules/.bin/tsx --env-file-if-exists=../.env src/index.ts
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/monzoid
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+data/
+.env
+*.db
+*.db-wal
+*.db-shm
+# Банковские выписки никогда не кладём в репозиторий
+*.pdf
+# Сканы блокнота с личными финансами
+notepad/
+.claude/settings.local.json
+.claude/launch.json
+CLAUDE.local.md

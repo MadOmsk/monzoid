@@ -1,0 +1,10 @@
+[Unit]
+Description=Monzoid: резервная копия базы
+
+[Service]
+Type=oneshot
+User=monzoid
+StateDirectory=monzoid
+Environment=DB_PATH=/var/lib/monzoid/monzoid.db
+Environment=BACKUP_DIR=/var/lib/monzoid/backups
+ExecStart=/usr/local/bin/node /opt/monzoid/deploy/backup.mjs
