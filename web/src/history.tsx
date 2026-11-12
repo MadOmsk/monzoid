@@ -30,23 +30,31 @@ export function HistoryScreen({ base, startYm, currentYm, isAdmin, currency }: {
   const [fundsMode, setFundsMode] = useRemembered<FundsMode>(`${base}:fundsMode`, 'balance');
   // Снятые линии графика итогов запоминаются в браузере для каждой базы
   const [totalsHidden, setTotalsHidden] = useHiddenSet(`monzoid:totals-hidden:${base}`);
-  const [trail, setTrail] = useState<{ view: View; fundId: number | null }[]>([]);
+  // Путь «откуда пришли» запоминается вместе с экраном: при уходе на другую вкладку статистика выгружается,
+  // и без него открытый фонд вернулся бы с неработающей кнопкой «Назад»
+  const [trail, setTrail] = useRemembered<{ view: View; fundId: number | null }[]>(`${base}:trail`, []);
   const go = (nextView: View, nextFund: number | null) => {
     if (nextView === view && nextFund === fundId) return;
-    setTrail((t) => [...t, { view, fundId }]);
+    setTrail([...trail, { view, fundId }]);
     setCurrentView(nextView);
     setCurrentFund(nextFund);
     window.scrollTo(0, 0);
   };
   const setView = (next: View) => go(next, fundId);
+  const fundOpen = view === 'funds' && fundId !== null;
   const back = () => {
     const previous = trail[trail.length - 1];
-    setCurrentView(previous.view);
-    setCurrentFund(previous.fundId);
-    setTrail((t) => t.slice(0, -1));
+    if (previous) {
+      setCurrentView(previous.view);
+      setCurrentFund(previous.fundId);
+      setTrail(trail.slice(0, -1));
+    } else {
+      // Пути нет (старое запомненное состояние): из фонда назад в список фондов
+      setCurrentFund(null);
+    }
     window.scrollTo(0, 0);
   };
-  useBack(trail.length > 0, 1, back);
+  useBack(trail.length > 0 || fundOpen, 1, back);
 
   if (error) return <Banner kind="error">{error}</Banner>;
   if (!data) return <Spinner />;
