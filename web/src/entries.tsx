@@ -26,6 +26,10 @@ export type EntryKind = 'all' | 'expense' | 'income';
 interface EntriesView {
   query: string;
   tagId: number | null;
+  /** Источник дохода (категория из статистики «Доходы») */
+  source: string | null;
+  /** Кто платил за расход: 'base' из общих денег, иначе ID участника */
+  paidBy: 'base' | number | null;
   filtersOpen: boolean;
   /** Период стал «Всё время» сам, когда начали искать */
   autoAll: boolean;
@@ -34,7 +38,7 @@ interface EntriesView {
 }
 const views = new Map<string, EntriesView>();
 function viewOf(base: string): EntriesView {
-  if (!views.has(base)) views.set(base, { query: '', tagId: null, filtersOpen: false, autoAll: false, scrollY: null });
+  if (!views.has(base)) views.set(base, { query: '', tagId: null, source: null, paidBy: null, filtersOpen: false, autoAll: false, scrollY: null });
   return views.get(base)!;
 }
 
@@ -68,6 +72,16 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
     view.tagId = id;
     setTagIdState(id);
   };
+  const [source, setSourceState] = useState<string | null>(view.source);
+  const setSource = (value: string | null) => {
+    view.source = value;
+    setSourceState(value);
+  };
+  const [paidBy, setPaidByState] = useState<'base' | number | null>(view.paidBy);
+  const setPaidBy = (value: 'base' | number | null) => {
+    view.paidBy = value;
+    setPaidByState(value);
+  };
   const [query, setQueryState] = useState(view.query);
   const setQuery = (text: string) => {
     view.query = text;
@@ -99,7 +113,10 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
   const [from, to] = period.mode === 'all' ? [startYm, ALL_TO] : period.mode === 'month' ? [ym, ym] : [period.from, period.to];
   // У доходов нет фонда, поэтому фильтр по фонду для них не применяется
   const byFund = kind !== 'income' && fundId;
-  const { data, error, reload } = useLoad<Entry[]>(`${base}/entries?from=${from}&to=${to}${kind !== 'all' ? `&kind=${kind}` : ''}${byFund ? `&fundId=${fundId}` : ''}${tagId ? `&tagId=${tagId}` : ''}${search ? `&q=${encodeURIComponent(search)}` : ''}`);
+  // Источник только у доходов, плательщик только у расходов
+  const bySource = kind === 'income' && source;
+  const byPayer = kind === 'expense' && paidBy !== null;
+  const { data, error, reload } = useLoad<Entry[]>(`${base}/entries?from=${from}&to=${to}${kind !== 'all' ? `&kind=${kind}` : ''}${byFund ? `&fundId=${fundId}` : ''}${bySource ? `&source=${encodeURIComponent(source)}` : ''}${byPayer ? `&paidBy=${paidBy}` : ''}${tagId ? `&tagId=${tagId}` : ''}${search ? `&q=${encodeURIComponent(search)}` : ''}`);
   // Возврат из операции: список встаёт туда, где был
   useEffect(() => {
     if (!data || view.scrollY === null) return;
@@ -122,6 +139,13 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
   };
   const { data: funds } = useLoad<Fund[]>(`${base}/funds`);
   const { data: tags } = useLoad<Tag[]>(`${base}/tags`);
+  const { data: incomeTotals } = useLoad<{ category: string; total: number }[]>(kind === 'income' ? `${base}/incomes/categories` : null);
+  const { data: members } = useLoad<Member[]>(kind === 'expense' ? `${base}/members` : null);
+  // Источники по сумме за всё время, крупные сверху
+  const sourceList = [...(incomeTotals ?? []).reduce((m, r) => m.set(r.category, (m.get(r.category) ?? 0) + r.total), new Map<string, number>())]
+    .sort((a, b) => b[1] - a[1])
+    .map(([name]) => name);
+  const payerName = typeof paidBy === 'number' ? members?.find((m) => m.userId === paidBy)?.name : null;
   // Фильтры спрятаны под кнопку; выбранные видны плашками под поиском, каждую можно снять
   const [filtersOpen, setFiltersOpenState] = useState(view.filtersOpen);
   const setFiltersOpen = (open: boolean) => {
@@ -137,6 +161,8 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
     ...(kind !== 'all' ? [{ key: 'k', label: kind === 'income' ? 'Доходы' : 'Расходы', clear: () => onKind('all') }] : []),
     ...(byFund && fundName ? [{ key: 'f', label: fundLabel(fundName), clear: () => onFund(null) }] : []),
     ...(tagName ? [{ key: 't', label: `#${tagName}`, clear: () => setTagId(null) }] : []),
+    ...(bySource ? [{ key: 's', label: source, clear: () => setSource(null) }] : []),
+    ...(byPayer ? [{ key: 'w', label: paidBy === 'base' ? 'Из общих' : `Платил(а): ${memberLabel(payerName ?? '')}`, clear: () => setPaidBy(null) }] : []),
   ];
   // Поиск виден в самом поле, на кнопке считаются остальные фильтры
   const activeCount = chips.filter((c) => c.key !== 'q').length;
@@ -261,6 +287,19 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
           )}
           <Segmented value={kind} options={[['expense', 'Расходы'], ['income', 'Доходы'], ['all', 'Все']]} onChange={onKind} />
           {kind !== 'income' && <FundTiles collapsible funds={(funds ?? []).filter((f) => !f.archived || f.id === fundId)} value={fundId} allLabel="Все фонды" onChange={onFund} />}
+          {kind === 'income' && sourceList.length > 0 && (
+            <select aria-label="Источник дохода" value={source ?? ''} onChange={(e) => setSource(e.target.value || null)}>
+              <option value="">Все источники</option>
+              {sourceList.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          )}
+          {kind === 'expense' && !!members?.length && (
+            <select aria-label="Кто платил" value={paidBy ?? ''} onChange={(e) => setPaidBy(e.target.value === '' ? null : e.target.value === 'base' ? 'base' : Number(e.target.value))}>
+              <option value="">Кто платил: все</option>
+              <option value="base">Из общих денег</option>
+              {members.map((m) => <option key={m.userId} value={m.userId}>{memberLabel(m.name)}</option>)}
+            </select>
+          )}
           {!!tags?.length && (
             <select aria-label="Фильтр по тегу" value={tagId ?? ''} onChange={(e) => setTagId(e.target.value ? Number(e.target.value) : null)}>
               <option value="">Все теги</option>

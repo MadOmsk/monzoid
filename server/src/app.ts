@@ -18,7 +18,7 @@ import type { FundSuggester } from './statements/ai.js';
 import { noteEntries, noteSettlement, scheduleNext, seriesFields, skipReminder } from './notify.js';
 import { checkRefund, checkRefunded } from './refunds.js';
 import { archiveFund, archivePreview, lastArchive, restoreFund } from './archive.js';
-import { deleteTag, incomeCategories, incomeCategoryOptions, listTags, normalizeTag, normalizeTags, renameTag, setAdjustmentTags, setEntryTags, suggestTags, tagStats } from './tags.js';
+import { deleteTag, incomeCategories, incomeCategoryOptions, incomeSourceByEntry, listTags, normalizeTag, normalizeTags, renameTag, setAdjustmentTags, setEntryTags, suggestTags, tagStats } from './tags.js';
 
 export interface AppOptions {
   db: Db;
@@ -615,6 +615,10 @@ export function buildApp(options: AppOptions) {
     // Вид: доходы или расходы (возврат это расход с минусом и к доходам не относится)
     const kind = q.kind === 'income' || q.kind === 'expense' ? q.kind : null;
     const search = typeof q.q === 'string' ? q.q.trim().toLowerCase().slice(0, 100) : '';
+    // Источник дохода (категория, как в статистике «Доходы») и кто платил за расход: 'base' это из общих денег
+    const source = typeof q.source === 'string' && q.source ? q.source : null;
+    const paidBy = q.paidBy === 'base' ? 'base' : q.paidBy ? Number(q.paidBy) : null;
+    const sources = incomeSourceByEntry(db, ledgerId);
     const rows = all<{ tags: string; closed: number; amount: number; description: string; comment: string; fundName: string | null; paidByName: string | null; earnedByName: string | null; refundOf: string | null; refunded: number | null }>(
       db,
       `SELECT e.id, e.date, e.kind, e.amount, e.fund_id fundId, f.name fundName, e.description, e.comment, e.paid_by paidBy, e.pot_id potId,
@@ -642,7 +646,9 @@ export function buildApp(options: AppOptions) {
       tag,
     )
       .filter((e) => !(e as any).fundId || !hidden.has((e as any).fundId))
-      .map((e) => ({ ...e, closed: !!e.closed, tags: JSON.parse(e.tags) as string[], refundOf: e.refundOf ? JSON.parse(e.refundOf) : null, refunded: e.refunded ?? 0 }));
+      .filter((e: any) => source === null || (e.kind === 'income' && sources.get(e.id) === source))
+      .filter((e: any) => paidBy === null || (e.kind === 'expense' && (paidBy === 'base' ? e.paidBy === null : e.paidBy === paidBy)))
+      .map((e: any) => ({ ...e, source: e.kind === 'income' ? sources.get(e.id) ?? null : null, closed: !!e.closed, tags: JSON.parse(e.tags) as string[], refundOf: e.refundOf ? JSON.parse(e.refundOf) : null, refunded: e.refunded ?? 0 }));
     return search ? rows.filter((e) => matchesSearch(e, search)) : rows;
   });
 

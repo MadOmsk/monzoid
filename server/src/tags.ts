@@ -148,6 +148,13 @@ export function incomeCategories(db: Db, ledgerId: number): { ym: string; catego
   return [...totals.values()];
 }
 
+/** Источник (категория) каждого дохода базы, как в статистике «Доходы»: для фильтра в списке операций */
+export function incomeSourceByEntry(db: Db, ledgerId: number): Map<number, string> {
+  const rows = incomeRows(db, ledgerId);
+  const categoryOf = categorize(rows);
+  return new Map(rows.map((r) => [r.id, categoryOf(r).category]));
+}
+
 /**
  * Категории для выбора при внесении дохода: тег категории и, для зарплаты, чей доход.
  * Порядок по частоте, чтобы частые категории были сверху.

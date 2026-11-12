@@ -39,6 +39,31 @@ async function ledger(call: ReturnType<typeof setup>['call']) {
   return { base, fund };
 }
 
+describe('фильтры операций', () => {
+  it('доходы по источнику как в статистике, расходы по тому, кто платил', async () => {
+    const { call } = setup();
+    const { base, fund } = await ledger(call);
+    const anna = (await call(1, 'POST', `${base}/members/virtual`, { name: 'Анна' })).body.userId;
+    await call(1, 'POST', `${base}/entries`, { date: '2026-10-05', kind: 'income', amount: k(500), tags: ['зп основная'], earnedBy: 1 });
+    await call(1, 'POST', `${base}/entries`, { date: '2026-10-06', kind: 'income', amount: k(30), tags: ['кешбек'] });
+    await call(1, 'POST', `${base}/entries`, { date: '2026-10-07', kind: 'expense', amount: k(10), fundId: fund('Еда') });
+    await call(1, 'POST', `${base}/entries`, { date: '2026-10-08', kind: 'expense', amount: k(20), fundId: fund('Еда'), paidBy: anna });
+    const list = async (query: string) => (await call(1, 'GET', `${base}/entries?ym=2026-10&${query}`)).body as { amount: number; source: string | null }[];
+
+    const incomes = await list('kind=income');
+    const sources = incomes.map((e) => e.source!);
+    expect(sources).toHaveLength(2);
+    expect(sources).toContain('Кешбек');
+    const salary = sources.find((x) => x.startsWith('ЗП'))!;
+    expect(salary).toBeTruthy();
+    expect((await list(`kind=income&source=${encodeURIComponent(salary)}`)).map((e) => e.amount)).toEqual([k(500)]);
+    expect((await list(`kind=income&source=${encodeURIComponent('Кешбек')}`)).map((e) => e.amount)).toEqual([k(30)]);
+
+    expect((await list('kind=expense&paidBy=base')).map((e) => e.amount)).toEqual([k(10)]);
+    expect((await list(`kind=expense&paidBy=${anna}`)).map((e) => e.amount)).toEqual([k(20)]);
+  });
+});
+
 describe('расчёт месяца', () => {
   it('поиск по операциям: слова в комментарии, фонде и тегах без учёта регистра, число в сумме', async () => {
     const { call } = setup();
