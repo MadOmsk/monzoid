@@ -1387,6 +1387,14 @@ describe('операции в обработке', () => {
     expect(second.rows.every((r: any) => r.suggestedAction === 'skip')).toBe(true);
   });
 
+  it('суммы сравниваются с допуском в 2 сотых: банк округлил иначе', async () => {
+    const { call, base, upload } = await start();
+    await upload([stmtRow({})]);
+    const rounded = stmtRow({ hash: 'h8', amount: -50002, op: 'Покупка', pending: false });
+    const batch = (await call(1, 'GET', `${base}/imports/${await upload([rounded])}`)).body;
+    expect(batch.rows).toMatchObject([{ suggestedAction: 'skip' }]);
+  });
+
   it('проведённая сумма отличается: операция новая, но с подсказкой сверить', async () => {
     const { call, base, upload } = await start();
     await upload([stmtRow({})]);
@@ -2140,35 +2148,52 @@ describe('подсказка тегов по истории', () => {
 });
 
 describe('копия базы в Telegram', () => {
-  it('по умолчанию раз в неделю; владелец меняет интервал и шлёт вручную, остальным нельзя', async () => {
+  it('настройка у базы: по умолчанию раз в неделю; администратор меняет и шлёт себе только свою базу', async () => {
     const db = openDb(':memory:');
-    const sent: { chatId: number; name: string; size: number }[] = [];
-    const sendDocument = async (chatId: number, file: Buffer, name: string) => { sent.push({ chatId, name, size: file.length }); };
-    const app = buildApp({ db, botToken: 'test', devAuth: true, ownerIds: [1], suggestFunds: async () => new Map(), sendDocument });
+    const sent: { chatId: number; name: string; file: Buffer }[] = [];
+    const sendDocument = async (chatId: number, file: Buffer, name: string) => { sent.push({ chatId, name, file }); };
+    const app = buildApp({ db, botToken: 'test', devAuth: true, ownerIds: [1, 2], suggestFunds: async () => new Map(), sendDocument });
     const call = async (user: number, method: 'GET' | 'POST' | 'PATCH', url: string, body?: unknown) => {
       const res = await app.inject({ method, url, headers: { 'x-dev-user': String(user) }, ...(body ? { payload: body as any } : {}) });
       return { status: res.statusCode, body: res.json() };
     };
-    expect((await call(1, 'GET', '/api/backup')).body).toMatchObject({ enabled: true, days: 7, lastSentAt: null, canSend: true });
-    expect((await call(2, 'GET', '/api/backup')).status).toBe(403);
-    expect((await call(2, 'POST', '/api/backup/send')).status).toBe(403);
-    expect((await call(1, 'PATCH', '/api/backup', { days: 5 })).status).toBe(400);
-    expect((await call(1, 'PATCH', '/api/backup', { enabled: false, days: 14 })).body).toMatchObject({ enabled: false, days: 14 });
+    const mine = `/api/ledgers/${(await call(1, 'POST', '/api/ledgers', { name: 'Семья' })).body.id}`;
+    const other = `/api/ledgers/${(await call(2, 'POST', '/api/ledgers', { name: 'Чужая' })).body.id}`;
+    expect((await call(2, 'POST', `${other}/adjustments`, { date: '2026-11-01', amount: 777, comment: 'секрет чужой базы' })).status).toBe(200);
 
-    const res = await call(1, 'POST', '/api/backup/send');
+    expect((await call(1, 'GET', `${mine}/backup`)).body).toMatchObject({ enabled: true, days: 7, lastSentAt: null, canSend: true });
+    expect((await call(1, 'GET', `${other}/backup`)).status).toBe(403);
+    expect((await call(1, 'PATCH', `${mine}/backup`, { days: 5 })).status).toBe(400);
+    expect((await call(1, 'PATCH', `${mine}/backup`, { enabled: false, days: 14 })).body).toMatchObject({ enabled: false, days: 14 });
+    expect((await call(2, 'GET', `${other}/backup`)).body).toMatchObject({ enabled: true, days: 7 });
+
+    const res = await call(1, 'POST', `${mine}/backup/send`);
     expect(res.body).toMatchObject({ sent: 1, lastSentAt: expect.any(String) });
-    expect(sent).toMatchObject([{ chatId: 1, name: expect.stringMatching(/^monzoid-\d{4}-\d{2}-\d{2}\.db\.gz$/) }]);
-    expect(sent[0].size).toBeGreaterThan(0);
+    expect(sent).toMatchObject([{ chatId: 1, name: expect.stringMatching(/^monzoid-Семья-\d{4}-\d{2}-\d{2}\.db\.gz$/) }]);
+
+    // В файле только своя база: чужой базы, её участников и операций нет
+    const { gunzipSync } = await import('node:zlib');
+    const { writeFileSync, mkdtempSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const path = join(mkdtempSync(join(tmpdir(), 'bk-')), 'c.db');
+    writeFileSync(path, gunzipSync(sent[0].file));
+    const copy = openDb(path);
+    expect(copy.prepare('SELECT name FROM ledgers').all().map((r: any) => r.name)).toEqual(['Семья']);
+    expect(copy.prepare('SELECT id FROM users').all().map((r: any) => r.id)).toEqual([1]);
+    expect(copy.prepare(`SELECT COUNT(*) n FROM adjustments`).get()).toMatchObject({ n: 0 });
+    copy.close();
   });
 
   it('по расписанию: первая отправка через полный интервал, выключенная не отправляется', async () => {
-    const { backupDue, updateBackupSettings } = await import('../src/backup.js');
+    const { dueLedgers, updateBackupSettings } = await import('../src/backup.js');
     const db = openDb(':memory:');
-    const t0 = new Date('2026-11-12T00:00:00Z');
-    expect(backupDue(db, t0)).toBe(false);
-    expect(backupDue(db, new Date('2026-11-18T00:00:00Z'))).toBe(false);
-    expect(backupDue(db, new Date('2026-11-19T00:00:00Z'))).toBe(true);
-    updateBackupSettings(db, { enabled: false });
-    expect(backupDue(db, new Date('2026-12-30T00:00:00Z'))).toBe(false);
+    const app = buildApp({ db, botToken: 'test', devAuth: true, ownerIds: [1], suggestFunds: async () => new Map() });
+    const id = (await app.inject({ method: 'POST', url: '/api/ledgers', headers: { 'x-dev-user': '1' }, payload: { name: 'Семья' } })).json().id;
+    expect(dueLedgers(db, new Date('2026-11-12T00:00:00Z'))).toEqual([]);
+    expect(dueLedgers(db, new Date('2026-11-18T00:00:00Z'))).toEqual([]);
+    expect(dueLedgers(db, new Date('2026-11-19T00:00:00Z'))).toEqual([id]);
+    updateBackupSettings(db, id, { enabled: false });
+    expect(dueLedgers(db, new Date('2026-12-30T00:00:00Z'))).toEqual([]);
   });
 });

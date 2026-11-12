@@ -36,7 +36,7 @@ export function MoreScreen({ section, base, ledger, me, onSwitch, onChanged }: {
   if (page === 'imports') return <SubPage title="Отправленные выписки" onBack={close}><SentImports base={base} onChanged={onChanged} /></SubPage>;
   if (page === 'tags') return <SubPage title="Теги" onBack={close}><TagsManager base={base} /></SubPage>;
   if (page === 'invite') return <SubPage title="Пригласить в сервис" onBack={close}><ServiceInvite /></SubPage>;
-  if (page === 'backup') return <SubPage title="Копии базы" onBack={close}><BackupSettings /></SubPage>;
+  if (page === 'backup') return <SubPage title="Копии базы" onBack={close}><BackupSettings base={base} /></SubPage>;
   if (page === 'ledgers') {
     return (
       <SubPage title="Мои базы" onBack={close}>
@@ -70,6 +70,7 @@ export function MoreScreen({ section, base, ledger, me, onSwitch, onChanged }: {
         {isAdmin && link('adjustments', 'Корректировки и переносы')}
         {link('imports', 'Отправленные выписки')}
         {isAdmin && link('changes', 'Изменения закрытых месяцев')}
+        {isAdmin && link('backup', 'Копии базы в Telegram')}
         {isAdmin && link('settings', 'Настройки базы', ledger.locked ? 'заблокирована' : undefined)}
       </>
     );
@@ -81,7 +82,6 @@ export function MoreScreen({ section, base, ledger, me, onSwitch, onChanged }: {
       {link('appearance', 'Оформление')}
       {link('ledgers', 'Мои базы', ledger.name)}
       {me.isOwner && link('invite', 'Пригласить в сервис')}
-      {me.isOwner && link('backup', 'Копии базы в Telegram')}
     </>
   );
 }
@@ -236,9 +236,9 @@ type Backup = { enabled: boolean; days: number; lastSentAt: string | null; inter
 const intervalLabel = (days: number) =>
   days === 1 ? 'каждый день' : days === 7 ? 'раз в неделю' : days === 14 ? 'раз в 2 недели' : days === 30 ? 'раз в месяц' : `раз в ${days} дня`;
 
-/** Копия всей базы сервиса владельцам в личку от бота: расписание и отправка вручную */
-function BackupSettings() {
-  const { data, reload } = useLoad<Backup>('/backup');
+/** Копия этой базы администраторам в личку от бота: расписание и отправка вручную */
+function BackupSettings({ base }: { base: string }) {
+  const { data, reload } = useLoad<Backup>(`${base}/backup`);
   const { error, run } = useAction(reload);
   const [sent, setSent] = useState<string | null>(null);
   if (!data) return <Spinner />;
@@ -248,13 +248,13 @@ function BackupSettings() {
     <>
       {error && <Banner kind="error">{error}</Banner>}
       {sent && <Banner kind="ok">{sent}</Banner>}
-      <p className="muted small">Бот присылает владельцам сервиса файл со всей базой (все учёты) в сжатом виде. Это запасная копия на случай, если сервер пропадёт. Храни её у себя и не пересылай.</p>
+      <p className="muted small">Бот присылает администраторам этой базы файл с её учётом в сжатом виде. Других баз в нём нет. Это запасная копия на случай, если сервер пропадёт. Храни её у себя и не пересылай.</p>
       <label className="check-row">
-        <input type="checkbox" checked={data.enabled} onChange={(e) => { const enabled = e.target.checked; void run(() => api.patch('/backup', { enabled })); }} />
+        <input type="checkbox" checked={data.enabled} onChange={(e) => { const enabled = e.target.checked; void run(() => api.patch(`${base}/backup`, { enabled })); }} />
         <span><b>Присылать копию по расписанию</b></span>
       </label>
       <Field label="Как часто">
-        <select value={data.days} disabled={!data.enabled} onChange={(e) => { const days = Number(e.target.value); void run(() => api.patch('/backup', { days })); }}>
+        <select value={data.days} disabled={!data.enabled} onChange={(e) => { const days = Number(e.target.value); void run(() => api.patch(`${base}/backup`, { days })); }}>
           {data.intervals.map((d) => <option key={d} value={d}>{intervalLabel(d)}</option>)}
         </select>
       </Field>
@@ -263,8 +263,8 @@ function BackupSettings() {
         {next && ` Следующая: около ${when(next)}.`}
       </p>
       <Button disabled={!data.canSend} onClick={() => run(async () => {
-        const res = await api.post<{ sent: number }>('/backup/send');
-        setSent(`Копия отправлена: ${res.sent === 1 ? 'тебе в личку от бота' : `владельцам (${res.sent})`}.`);
+        await api.post(`${base}/backup/send`);
+        setSent('Копия отправлена тебе в личку от бота.');
       })}>Отправить копию сейчас</Button>
       {!data.canSend && <p className="muted small">Бот не настроен на этом сервере.</p>}
     </>

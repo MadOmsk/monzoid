@@ -44,5 +44,5 @@ startMarketUpdates(db, market);
 if (botToken && process.env.BOT_POLLING !== '0') startBot(db, botToken);
 // Уведомления участникам о выплатах и операциях
 if (botToken) startNotices(db, telegramSend(botToken, process.env.BOT_USERNAME?.replace(/^@/, '')));
-// Копия базы владельцам в Telegram по расписанию из настроек (по умолчанию раз в неделю)
-if (sendDocument && ownerIds.length) startBackupSender(db, sendDocument, ownerIds);
+// Копия каждой базы её администраторам в Telegram по расписанию из настроек базы (по умолчанию раз в неделю)
+if (sendDocument) startBackupSender(db, sendDocument);

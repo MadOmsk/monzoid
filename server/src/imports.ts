@@ -98,6 +98,13 @@ export async function createImportFromRows(
      FROM import_rows r WHERE r.ledger_id = ? AND r.is_pending = 1 ORDER BY r.date, r.id`,
     ledgerId,
   );
+  const baseCurrency = get<{ currency: string }>(db, 'SELECT currency FROM ledgers WHERE id = ?', ledgerId)!.currency;
+  // 2 цента доллара в валюте операции, в сотых долях; без курса просто 2 сотых
+  const tolerances = new Map<string, number>();
+  const tolerance = (currency: string) => {
+    if (!tolerances.has(currency)) tolerances.set(currency, Math.max(2, convert(db, 2, 'USD', currency)?.amount ?? 2));
+    return tolerances.get(currency)!;
+  };
   const settled: { id: number; row: StatementRow; undecided: boolean; pendingDate: string }[] = [];
   // Похожая операция «в обработке» с другой суммой: не пропускается, но человек видит, с чем сверить
   const nearMiss = new Map<string, string>();
@@ -109,7 +116,12 @@ export async function createImportFromRows(
       p.currency === row.currency &&
       sameMerchant(p.merchant_key, key) &&
       Math.abs(Date.parse(p.date) - Date.parse(row.date)) <= PENDING_WINDOW_DAYS * 86_400_000;
-    const i = openPending.findIndex((p) => near(p) && (p.amount === row.amount || (p.booked !== null && -p.booked === row.amount)));
+    const tol = tolerance(row.currency);
+    // Суммы сравниваются с допуском ±2 цента (в других валютах столько же по курсу): банк округляет по-разному
+    const close = (a: number, b: number) => Math.abs(a - b) <= tol;
+    const i = openPending.findIndex(
+      (p) => near(p) && (close(p.amount, row.amount) || (row.currency === baseCurrency && p.booked !== null && close(-p.booked, row.amount))),
+    );
     if (i < 0) {
       const similar = openPending.find(near);
       if (similar) {

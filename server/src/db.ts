@@ -171,11 +171,6 @@ CREATE TABLE IF NOT EXISTS fx_rates (
   per_usd REAL NOT NULL,
   date TEXT NOT NULL
 );
--- Настройки всего сервиса (не отдельной базы): ключ и значение
-CREATE TABLE IF NOT EXISTS app_settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
 CREATE TABLE IF NOT EXISTS quotes (
   ticker TEXT PRIMARY KEY,
   price REAL NOT NULL,
@@ -252,6 +247,11 @@ export function openDb(path: string): Db {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  // Копия базы в Telegram: настройки у каждой базы, по умолчанию раз в неделю
+  const backupColumns = all<{ name: string }>(db, 'PRAGMA table_info(ledgers)').map((c) => c.name);
+  if (!backupColumns.includes('backup_enabled')) db.exec('ALTER TABLE ledgers ADD COLUMN backup_enabled INTEGER NOT NULL DEFAULT 1');
+  if (!backupColumns.includes('backup_days')) db.exec('ALTER TABLE ledgers ADD COLUMN backup_days INTEGER NOT NULL DEFAULT 7');
+  if (!backupColumns.includes('backup_last_sent_at')) db.exec('ALTER TABLE ledgers ADD COLUMN backup_last_sent_at TEXT');
   const columns = all<{ name: string }>(db, 'PRAGMA table_info(import_rows)');
   if (!columns.some((c) => c.name === 'is_pending')) {
     db.exec('ALTER TABLE import_rows ADD COLUMN is_pending INTEGER NOT NULL DEFAULT 0');

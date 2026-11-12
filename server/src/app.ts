@@ -204,7 +204,9 @@ export function buildApp(options: AppOptions) {
     const unlocking = req.method === 'PATCH' && req.routeOptions.url === L;
     // Выйти можно и из заблокированной базы: участник не может снять блокировку сам
     const leaving = req.method === 'POST' && req.routeOptions.url === `${L}/leave`;
-    if (locked && req.method !== 'GET' && !unlocking && !leaving) throw new DomainError('База заблокирована. Сними блокировку в настройках базы.', 423);
+    // Копия на данные не влияет: её можно настроить и отправить и у заблокированной базы
+    const backup = req.routeOptions.url?.startsWith(`${L}/backup`);
+    if (locked && req.method !== 'GET' && !unlocking && !leaving && !backup) throw new DomainError('База заблокирована. Сними блокировку в настройках базы.', 423);
     // Начисления появляются сами с наступлением месяца и следуют за планом
     if (!locked) tx(db, () => syncCredits(db, ledgerId, currentYm()));
     return { userId: user.id, ledgerId, isAdmin };
@@ -343,33 +345,6 @@ export function buildApp(options: AppOptions) {
     return { ledgerId: invite.ledger_id };
   });
 
-  // Копия всей базы владельцам сервиса в Telegram: настройки периодической отправки и отправка вручную
-  app.get('/api/backup', async (req) => {
-    const user = authenticate(req);
-    if (!isOwner(user.id)) throw new DomainError('Это может только владелец сервиса', 403);
-    return { ...backupSettings(db), intervals: BACKUP_INTERVALS, canSend: !!options.sendDocument };
-  });
-
-  app.patch('/api/backup', async (req) => {
-    const user = authenticate(req);
-    if (!isOwner(user.id)) throw new DomainError('Это может только владелец сервиса', 403);
-    const body = z
-      .object({ enabled: z.boolean().optional(), days: z.number().int().refine((d) => (BACKUP_INTERVALS as readonly number[]).includes(d), 'Такого интервала нет').optional() })
-      .parse(req.body);
-    return updateBackupSettings(db, body);
-  });
-
-  app.post('/api/backup/send', async (req) => {
-    const user = authenticate(req);
-    if (!isOwner(user.id)) throw new DomainError('Это может только владелец сервиса', 403);
-    if (!options.sendDocument) throw new DomainError('Бот не настроен: отправить копию некому.', 503);
-    try {
-      return { sent: await sendBackup(db, options.sendDocument, options.ownerIds ?? []), ...backupSettings(db) };
-    } catch (e) {
-      throw new DomainError(`Копия не отправлена: ${(e as Error).message}`, 502);
-    }
-  });
-
   app.post('/api/service-invites', async (req) => {
     const user = authenticate(req);
     if (!isOwner(user.id)) throw new DomainError('Это может только владелец сервиса', 403);
@@ -378,6 +353,30 @@ export function buildApp(options: AppOptions) {
     return { token, link: inviteLink(token) };
   });
 
+
+  // Копия базы в Telegram: настройки у администратора базы, отправка вручную себе в личку
+  app.get(`${L}/backup`, async (req) => {
+    const { ledgerId } = access(req, true);
+    return { ...backupSettings(db, ledgerId), intervals: BACKUP_INTERVALS, canSend: !!options.sendDocument };
+  });
+
+  app.patch(`${L}/backup`, async (req) => {
+    const { ledgerId } = access(req, true);
+    const body = z
+      .object({ enabled: z.boolean().optional(), days: z.number().int().refine((d) => (BACKUP_INTERVALS as readonly number[]).includes(d), 'Такого интервала нет').optional() })
+      .parse(req.body);
+    return updateBackupSettings(db, ledgerId, body);
+  });
+
+  app.post(`${L}/backup/send`, async (req) => {
+    const { ledgerId, userId } = access(req, true);
+    if (!options.sendDocument) throw new DomainError('Бот не настроен: отправить копию некому.', 503);
+    try {
+      return { sent: await sendBackup(db, options.sendDocument, ledgerId, [userId]), ...backupSettings(db, ledgerId) };
+    } catch (e) {
+      throw new DomainError(`Копия не отправлена: ${(e as Error).message}`, 502);
+    }
+  });
 
   app.patch(L, async (req) => {
     const { ledgerId } = access(req, true);
