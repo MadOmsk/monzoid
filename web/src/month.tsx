@@ -59,6 +59,20 @@ export function MonthScreen({ base, ledgerName, userId, ym, currentYm, onYm, onF
   const left = report.plannedTotal - report.spentTotal;
   const saved = report.income - report.spentTotal - (report.assetCosts ?? 0);
 
+  // Календарный месяц прошёл, а этот ещё открыт: закрыть и поправить план нужно сейчас, кнопки наверху
+  const actionsOnTop = !report.closed && ym < currentYm;
+  const monthActions = isAdmin && (
+    <div className="stack">
+      {!report.closed && <Button onClick={onPlan}>Править план месяца</Button>}
+      {canClose && (
+        <Button primary={actionsOnTop} onClick={() => act('close', `Закрыть ${monthName(ym)}? Свободные средства: ${signed(report.freeDelta)}, фонды: ${signed(report.fundsDelta)}. Операции этого месяца нельзя будет менять, пока он не открыт заново.`)}>
+          Закрыть месяц
+        </Button>
+      )}
+      {canReopen && <Button onClick={() => act('reopen', `Открыть ${monthName(ym)} заново?`)}>Открыть месяц заново</Button>}
+    </div>
+  );
+
   async function act(path: string, question: string) {
     if (!(await confirmAction(question))) return;
     try {
@@ -83,6 +97,7 @@ export function MonthScreen({ base, ledgerName, userId, ym, currentYm, onYm, onF
         </Banner>
       )}
       {actionError && <Banner kind="error">{actionError}</Banner>}
+      {actionsOnTop && monthActions}
 
       {totals && (
         <div className="tiles">
@@ -179,17 +194,7 @@ export function MonthScreen({ base, ledgerName, userId, ym, currentYm, onYm, onF
 
       <MonthExtras base={base} ym={ym} />
 
-      {isAdmin && (
-        <div className="stack">
-          {!report.closed && <Button onClick={onPlan}>Править план месяца</Button>}
-          {canClose && (
-            <Button onClick={() => act('close', `Закрыть ${monthName(ym)}? Свободные средства: ${signed(report.freeDelta)}, фонды: ${signed(report.fundsDelta)}. Операции этого месяца нельзя будет менять, пока он не открыт заново.`)}>
-              Закрыть месяц
-            </Button>
-          )}
-          {canReopen && <Button onClick={() => act('reopen', `Открыть ${monthName(ym)} заново?`)}>Открыть месяц заново</Button>}
-        </div>
-      )}
+      {!actionsOnTop && monthActions}
     </>
   );
 }
