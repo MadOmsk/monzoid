@@ -21,6 +21,9 @@ const TOTAL_SERIES: Series<MonthReport>[] = [
 
 type View = 'totals' | 'funds' | 'pots' | 'incomes' | 'members' | 'tags';
 
+/** fundId страницы «Все фонды»: у настоящих фондов ID больше нуля */
+const ALL_FUNDS = 0;
+
 export function HistoryScreen({ base, startYm, currentYm, isAdmin, currency }: { base: string; startYm: string; currentYm: string; isAdmin: boolean; currency: string }) {
   const { data, error } = useLoad<{ months: MonthReport[] }>(`${base}/history`);
   const [storedView, setCurrentView] = useRemembered<View | 'month'>(`${base}:view`, 'totals');
@@ -61,6 +64,15 @@ export function HistoryScreen({ base, startYm, currentYm, isAdmin, currency }: {
   // Статистика строится по закрытым месяцам; незакрытые прошлые видны только в «Капитале», серыми
   const allMonths = data.months;
   const months = allMonths.filter((m) => m.closed);
+  // fundId 0: страница «Все фонды» с итогами по всем фондам
+  if (view === 'funds' && fundId === ALL_FUNDS && months.length) {
+    return (
+      <>
+        <Header title="Все фонды" onBack={back} />
+        <FundsSummary months={months} onOpen={(id) => go('funds', id)} />
+      </>
+    );
+  }
   const openFund = view === 'funds' && fundId !== null ? months.flatMap((m) => m.funds).find((f) => f.id === fundId) : undefined;
   if (openFund) {
     return (
@@ -722,7 +734,7 @@ function FundsTable({ base, months: closedMonths, currentYm, mode, onOpen }: { b
                     ref={(el) => { if (el) el.indeterminate = hidden.size > 0 && hidden.size < funds.length; }}
                     onChange={() => setHidden(hidden.size === 0 ? new Set(funds.map(([, n]) => n)) : new Set())}
                   />
-                  Все фонды
+                  <button type="button" className="cell-button" onClick={() => onOpen(ALL_FUNDS)}>Все фонды ›</button>
                 </span>
               </th>
               {ordered.map((m) => <td key={m.ym} className={toneOf(total(m))}><b>{cell(total(m))}</b></td>)}
@@ -756,6 +768,109 @@ function FundsTable({ base, months: closedMonths, currentYm, mode, onOpen }: { b
                     return <td key={m.ym} className={spike ? 'negative' : f ? toneOf(value(f)) : ''} title={spike ? 'План выбивается из соседних месяцев' : undefined}>{f ? cell(value(f)) : '—'}</td>;
                   });
                 })()}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+/** Все фонды вместе: план, факт, разница и накопленное по месяцам, итоги за всё время и по каждому фонду. */
+function FundsSummary({ months, onOpen }: { months: MonthReport[]; onOpen: (id: number) => void }) {
+  const rows = months.map((m) => ({ ym: m.ym, planned: m.plannedTotal, spent: m.spentTotal, delta: m.plannedTotal - m.spentTotal, balance: m.fundsAfter, change: m.fundsDelta }));
+  const sum = (get: (r: (typeof rows)[number]) => number) => rows.reduce((s, r) => s + get(r), 0);
+  const planned = sum((r) => r.planned);
+  const spent = sum((r) => r.spent);
+  const balance = rows.at(-1)!.balance;
+  const opening = balance - sum((r) => r.change);
+  const moved = sum((r) => r.change) - (planned - spent);
+  const spikes = planSpikes(rows.map((r) => r.planned));
+  // Итоги по каждому фонду за все закрытые месяцы
+  const perFund = new Map<number, { id: number; name: string; planned: number; spent: number; balance: number }>();
+  for (const m of months) {
+    for (const f of m.funds) {
+      const t = perFund.get(f.id) ?? { id: f.id, name: f.name, planned: 0, spent: 0, balance: 0 };
+      t.planned += f.planned;
+      t.spent += f.spent;
+      t.balance = f.balanceAfter;
+      perFund.set(f.id, t);
+    }
+  }
+  const fundRows = [...perFund.values()].filter((f) => f.planned || f.spent || f.balance).sort((a, b) => b.spent - a.spent);
+
+  return (
+    <>
+      <div className="tiles">
+        <div className="tile"><span>Накоплено во всех фондах</span><strong className={tone(balance)}>{money(balance)}</strong><small>на конец {monthShort(rows.at(-1)!.ym)}</small></div>
+        <div className="tile"><span>План за всё время</span><strong>{money(planned)}</strong><small>{rows.length} мес. · в среднем {money(planned / rows.length)}</small></div>
+        <div className="tile"><span>Потрачено за всё время</span><strong>{money(spent)}</strong><small>в среднем {money(spent / rows.length)} в месяц</small></div>
+        <div className="tile"><span>План − факт</span><strong className={tone(planned - spent)}>{signed(planned - spent)}</strong><small>{planned > 0 ? `потрачено ${Math.round((spent / planned) * 100)}% плана` : ''}</small></div>
+        <div className="tile full">
+          <span>Откуда накопленное</span>
+          <small>старт {money(opening)} · план − факт {signed(planned - spent)} · переносы {signed(moved)} = {money(balance)}</small>
+        </div>
+      </div>
+      {rows.length > 1 && (
+        <>
+          <LineChart
+            rows={rows}
+            title="План, факт и разница за месяц"
+            label="План, факт и разница всех фондов по месяцам, те же данные в таблице ниже"
+            series={[
+              { label: 'Факт', cssVar: '--series-1', get: (r) => r.spent },
+              { label: 'План', cssVar: '--series-2', get: (r) => r.planned },
+              { label: 'План − факт', cssVar: '--series-4', get: (r) => r.delta },
+            ]}
+          />
+          <LineChart
+            rows={rows}
+            title="Накоплено во всех фондах"
+            label="Накопленный остаток всех фондов и его изменение за месяц, те же данные в таблице ниже"
+            series={[
+              { label: 'Накоплено', cssVar: '--series-3', get: (r) => r.balance },
+              { label: 'Изменение за месяц', cssVar: '--series-4', get: (r) => r.change },
+            ]}
+          />
+        </>
+      )}
+      <h2>По месяцам</h2>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Месяц</th><th>План</th><th>Факт</th><th>План − факт</th><th>Накоплено</th></tr></thead>
+          <tbody>
+            <tr className="funds-total">
+              <th scope="row">Всего</th>
+              <td><b>{cell(planned)}</b></td>
+              <td><b>{cell(spent)}</b></td>
+              <td className={tone(planned - spent)}><b>{signedCell(planned - spent)}</b></td>
+              <td className={tone(balance)}><b>{cell(balance)}</b></td>
+            </tr>
+            {[...rows].reverse().map((r, j) => (
+              <tr key={r.ym}>
+                <th scope="row">{monthShort(r.ym)}</th>
+                <td className={spikes.has(rows.length - 1 - j) ? 'negative' : ''}>{cell(r.planned)}</td>
+                <td>{cell(r.spent)}</td>
+                <td className={tone(r.delta)}>{signedCell(r.delta)}</td>
+                <ValueCell value={r.balance} delta={r.change} />
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <h2>По фондам за всё время</h2>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Фонд</th><th>План</th><th>Факт</th><th>План − факт</th><th>Накоплено</th></tr></thead>
+          <tbody>
+            {fundRows.map((f) => (
+              <tr key={f.id}>
+                <th scope="row"><button type="button" className="cell-button" onClick={() => onOpen(f.id)}>{fundLabel(f.name)}</button></th>
+                <td>{cell(f.planned)}</td>
+                <td>{cell(f.spent)}</td>
+                <td className={tone(f.planned - f.spent)}>{signedCell(f.planned - f.spent)}</td>
+                <td className={tone(f.balance)}>{cell(f.balance)}</td>
               </tr>
             ))}
           </tbody>
