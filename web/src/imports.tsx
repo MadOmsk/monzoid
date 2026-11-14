@@ -353,8 +353,6 @@ function ReviewCard({ base, row, draft, funds, members, tagOptions, incomeOption
   mergeOptions: ImportRow[];
   onChange: (patch: Partial<Draft>) => void;
 }) {
-  // Список для объединения раскрывается кнопками: выпадающий список в некоторых Telegram на телефоне не открывался
-  const [picking, setPicking] = useState(false);
   if (draft.action === 'merge') {
     const target = mergeOptions.find((r) => r.id === draft.mergeInto);
     return (
@@ -450,21 +448,10 @@ function ReviewCard({ base, row, draft, funds, members, tagOptions, incomeOption
         </>
       )}
       {!foreign && draft.action !== 'skip' && mergeOptions.length > 0 && (
-        <div className="merge-pick">
-          <button type="button" className="link" aria-expanded={picking} onClick={() => setPicking(!picking)}>
-            {picking ? 'Не объединять' : 'Объединить с другой операцией…'}
-          </button>
-          {picking && (
-            <div className="merge-list">
-              <span className="muted small">С какой операцией объединить:</span>
-              {mergeOptions.map((r) => (
-                <button type="button" key={r.id} className="chip" onClick={() => { setPicking(false); onChange({ action: 'merge', mergeInto: r.id }); }}>
-                  {dayMonth(r.date)} · {r.details || r.op} · {signed(r.amount)}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        <select className="merge-pick" aria-label="Объединить с другой операцией" value="" onChange={(e) => e.target.value && onChange({ action: 'merge', mergeInto: Number(e.target.value) })}>
+          <option value="">Объединить с другой операцией…</option>
+          {mergeOptions.map((r) => <option key={r.id} value={r.id}>{dayMonth(r.date)} · {r.details || r.op} · {signed(r.amount)}</option>)}
+        </select>
       )}
       {draft.action === 'income' && (
         <>

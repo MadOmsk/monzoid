@@ -259,9 +259,7 @@ fieldset.plain { display: contents; border: 0; padding: 0; margin: 0; min-width:
 .category-toggle { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 .category-toggle input { flex: none; width: 16px; height: 16px; margin: 0; padding: 0; }
 .review-card.merged { opacity: .75; }
-.merge-pick { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; font-size: 13px; }
-.merge-list { display: flex; flex-direction: column; align-items: stretch; gap: 6px; width: 100%; }
-.merge-list .chip { text-align: left; white-space: normal; }
+.merge-pick { font-size: 13px; color: var(--muted); }
 .range-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .range-row input { min-width: 0; width: 100%; }
 .simple-list { display: flex; flex-direction: column; }
