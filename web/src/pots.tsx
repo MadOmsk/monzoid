@@ -1,7 +1,7 @@
-import { useState } from 'react';
-import { api, ApiError, confirmAction, useLoad, withRecalc, type AssetValue, type MonthReport, type Pot, type PotQuotes } from './api';
+import { useEffect, useState } from 'react';
+import { api, ApiError, confirmAction, useLoad, withRecalc, type AssetValue, type MarketPrice, type MonthReport, type Pot, type PotQuotes } from './api';
 import { useBack } from './back';
-import { numberInput, amount, dayMonth, fundLabel, moneyRounded as money, monthShort, niceTicks, shiftYm, parseMoney, parseUnits, signedRounded as signed, symbol, today, toInput, tone } from './format';
+import { numberInput, amount, dayMonth, fundLabel, moneyRounded as money, monthShort, niceTicks, shiftYm, parseMoney, parseUnits, signedRounded as signed, symbol, today, toGroupedInput, toInput, tone } from './format';
 import { Banner, Button, DateInput, Header, Segmented, Spinner, useRemembered } from './ui';
 
 const FOREIGN_CURRENCIES = ['USD', 'EUR', 'RUB', 'GBP', 'CNY', 'TRY', 'AED', 'KZT', 'KGS', 'UZS'];
@@ -75,8 +75,21 @@ function dayLabel(date: string): string {
   return dayMonth(date);
 }
 
-/** Вклады в статистике: доходность всего, по группам и по каждому вкладу. */
-export function PotsView({ base, isAdmin, currency, months = [], currentYm }: { base: string; isAdmin: boolean; currency: string; months?: MonthReport[]; currentYm?: string }) {
+/** Вкладка «Вклады» в нижней панели. Доход за месяцы считается по закрытым месяцам, как в статистике. */
+export function PotsScreen({ base, isAdmin, currency, currentYm }: { base: string; isAdmin: boolean; currency: string; currentYm: string }) {
+  const { data, error } = useLoad<{ months: MonthReport[] }>(`${base}/history`);
+  if (error) return <Banner kind="error">{error}</Banner>;
+  if (!data) return <Spinner />;
+  return (
+    <>
+      <h1>Вклады и активы</h1>
+      <PotsView base={base} isAdmin={isAdmin} currency={currency} months={data.months.filter((m) => m.closed)} currentYm={currentYm} />
+    </>
+  );
+}
+
+/** Вклады: доходность всего, по группам и по каждому вкладу. */
+function PotsView({ base, isAdmin, currency, months = [], currentYm }: { base: string; isAdmin: boolean; currency: string; months?: MonthReport[]; currentYm?: string }) {
   const { data, error, reload } = useLoad<Pot[]>(`${base}/pots`);
   const [openId, setOpenId] = useState<number | null>(null);
   const [showSold, setShowSold] = useState(false);
@@ -372,17 +385,60 @@ function AssetDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; 
   );
 }
 
+/** Форма сделки: своим раскрывающимся разделом в карточке или телом внутри общего раздела. */
+function Section({ title, inline, children }: { title: string; inline?: boolean; children: React.ReactNode }) {
+  if (inline) return <div className="stack">{children}</div>;
+  return (
+    <details className="section">
+      <summary>{title}</summary>
+      <div className="section-body">{children}</div>
+    </details>
+  );
+}
+
+/** Число для поля ввода: до digits знаков после запятой, без лишних нулей. */
+function decimalInput(value: number, digits: number): string {
+  return String(Number(value.toFixed(digits))).replace('.', ',');
+}
+
 /** Покупка и продажа прямо в карточке вклада (валюта, вклад в основной валюте, актив). */
-function PotMove({ base, pot, onChanged }: { base: string; pot: Pot; onChanged: () => Promise<void> }) {
+function PotMove({ base, pot, inline, onChanged }: { base: string; pot: Pot; inline?: boolean; onChanged: () => Promise<void> }) {
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
   const [sum, setSum] = useState('');
   const [units, setUnits] = useState('');
   const [date, setDate] = useState(today());
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  // Какие поля человек ввёл сам; второе считается по курсу на дату, пока его не поправили руками
+  const [manual, setManual] = useState({ sum: false, units: false });
   const asset = pot.kind === 'asset';
   const counted = pot.kind === 'currency';
   const owned = pot.units > 0;
+  const quote = useLoad<MarketPrice>(counted ? `${base}/market/price?date=${date}&currency=${pot.currency}` : null);
+  const perUnit = quote.data ? quote.data.price * quote.data.rate : null;
+  const derive = (from: 'sum' | 'units', text: string, per: number | null) => {
+    if (!per) return;
+    if (from === 'sum') {
+      const value = parseMoney(text);
+      setUnits(value && value > 0 ? decimalInput(value / 100 / per, 2) : '');
+    } else {
+      const count = parseUnits(text);
+      setSum(count && count > 0 ? toGroupedInput(Math.round(count * per * 100)) : '');
+    }
+  };
+  const type = (field: 'sum' | 'units', text: string) => {
+    if (field === 'sum') setSum(text);
+    else setUnits(text);
+    const other = field === 'sum' ? 'units' : 'sum';
+    const next = { ...manual, [field]: text.trim() !== '' };
+    setManual(next);
+    if (!manual[other]) derive(field, text, perUnit);
+  };
+  // Новая дата или пришёл курс: пересчитать то, что не вводили руками
+  useEffect(() => {
+    if (manual.sum && !manual.units) derive('sum', sum, perUnit);
+    if (manual.units && !manual.sum) derive('units', units, perUnit);
+  }, [perUnit]);
   const words = asset
     ? { buy: owned ? 'Вложение' : 'Покупка', sell: 'Продажа' }
     : pot.kind === 'cash' ? { buy: 'Положить', sell: 'Забрать' } : { buy: 'Купить', sell: 'Продать' };
@@ -400,6 +456,7 @@ function PotMove({ base, pot, onChanged }: { base: string; pot: Pot; onChanged: 
       setDone(`${side === 'buy' ? words.buy : words.sell}: ${money(value)}${counted ? ` (${amount(count)} ${symbol(pot.currency)})` : ''}. ${side === 'buy' ? 'Деньги взяты из свободных средств.' : 'Деньги вернулись в свободные средства.'}`);
       setSum('');
       setUnits('');
+      setManual({ sum: false, units: false });
       await onChanged();
     } catch (e) {
       setDone(null);
@@ -408,21 +465,25 @@ function PotMove({ base, pot, onChanged }: { base: string; pot: Pot; onChanged: 
   }
 
   return (
-    <details className="section">
-      <summary>{asset ? (owned ? 'Вложение или продажа' : 'Покупка') : `${words.buy} или ${words.sell.toLowerCase()}`}</summary>
-      <div className="section-body">
+    <Section inline={inline} title={asset ? (owned ? 'Вложение или продажа' : 'Покупка') : `${words.buy} или ${words.sell.toLowerCase()}`}>
         {error && <Banner kind="error">{error}</Banner>}
         {done && <Banner kind="ok">{done}</Banner>}
         {(!asset || owned) && <Segmented value={side} options={[['buy', words.buy], ['sell', words.sell]]} onChange={setSide} />}
         {asset && side === 'sell' && <p className="muted small">Продажа отдаёт актив целиком.</p>}
+        {counted && (
+          <p className="muted small">
+            {perUnit
+              ? `Курс на ${dayMonth(date)}: 1 ${symbol(pot.currency)} = ${amount(perUnit)} ${symbol()}${quote.data!.rateOnDate ? '' : ' (последний известный)'}. Введи одно поле, второе посчитается; его можно поправить.`
+              : quote.error ? 'Курс не загрузился: введи оба поля.' : 'Загружаю курс…'}
+          </p>
+        )}
         <div className="inline-form wrap">
-          <input aria-label={`Сумма, ${symbol()}`} inputMode="decimal" placeholder={`Сумма, ${symbol()}`} value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />
-          {counted && <input aria-label={`Сколько, ${symbol(pot.currency)}`} inputMode="decimal" placeholder={`Сколько, ${symbol(pot.currency)}`} value={units} onChange={(e) => setUnits(numberInput(e.target.value, { decimals: 8 }))} />}
+          <input aria-label={`Сумма, ${symbol()}`} inputMode="decimal" placeholder={`Сумма, ${symbol()}`} value={sum} onChange={(e) => type('sum', numberInput(e.target.value))} />
+          {counted && <input aria-label={`Сколько, ${symbol(pot.currency)}`} inputMode="decimal" placeholder={`Сколько, ${symbol(pot.currency)}`} value={units} onChange={(e) => type('units', numberInput(e.target.value, { decimals: 8 }))} />}
           <DateInput label="Дата" value={date} onChange={setDate} />
           <Button small onClick={save}>{side === 'buy' ? words.buy : words.sell}</Button>
         </div>
-      </div>
-    </details>
+    </Section>
   );
 }
 
@@ -733,7 +794,7 @@ function PriceChart({ points, buys, average, unit, period }: {
  * сумма в основной валюте считается по курсу на дату сделки.
  */
 /** fixed: форма внутри карточки акции, тикер уже выбран */
-function StockTrade({ base, pots, fixed, onChanged }: { base: string; pots: Pot[]; fixed?: Pot; onChanged: () => Promise<void> }) {
+function StockTrade({ base, pots, fixed, inline, onChanged }: { base: string; pots: Pot[]; fixed?: Pot; inline?: boolean; onChanged: () => Promise<void> }) {
   const stocks = pots.filter((p) => p.kind === 'stock' && p.ticker);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -743,14 +804,23 @@ function StockTrade({ base, pots, fixed, onChanged }: { base: string; pots: Pot[
   const [price, setPrice] = useState('');
   const [priceIn, setPriceIn] = useState<'stock' | 'base'>('stock');
   const [date, setDate] = useState(today());
+  // Цена, введённая руками, не перезаписывается котировкой
+  const [priceManual, setPriceManual] = useState(false);
   const known = stocks.find((p) => p.ticker === ticker.trim().toUpperCase());
   const owned = known ? known.units : 0;
+  // Котировка на дату сделки для знакомого тикера; для нового тикера цену вводят сами
+  const quote = useLoad<MarketPrice>(known ? `${base}/market/price?date=${date}&ticker=${encodeURIComponent(known.ticker!)}` : null);
+  const autoPrice = quote.data ? (priceIn === 'stock' ? quote.data.price : quote.data.price * quote.data.rate) : null;
+  useEffect(() => {
+    if (!priceManual) setPrice(autoPrice ? decimalInput(autoPrice, 2) : '');
+  }, [autoPrice, priceManual]);
+  const count = parseUnits(units);
+  const each = parseUnits(price);
+  const total = count && each && (priceIn === 'base' || quote.data) ? count * each * (priceIn === 'base' ? 1 : quote.data!.rate) : null;
 
   function pickTicker(value: string) {
     setTicker(value);
-    // Для знакомого тикера сразу подставляется последняя котировка, её можно поправить на цену сделки
-    const match = stocks.find((p) => p.ticker === value.trim().toUpperCase());
-    if (match?.price && !price && priceIn === 'stock') setPrice(String(match.price).replace('.', ','));
+    setPriceManual(false);
   }
 
   async function trade() {
@@ -775,7 +845,7 @@ function StockTrade({ base, pots, fixed, onChanged }: { base: string; pots: Pot[
       setError(null);
       setDone(`${side === 'buy' ? 'Куплено' : 'Продано'}: ${ticker.trim().toUpperCase()} ${amount(count, 4)} шт. на ${money(Math.abs(res.amount))}${res.rate !== 1 ? ` (курс ${amount(res.rate)})` : ''}. ${side === 'buy' ? 'Деньги взяты из свободных средств.' : 'Деньги вернулись в свободные средства.'}`);
       setUnits('');
-      setPrice('');
+      setPriceManual(false);
       await onChanged();
     } catch (e) {
       setDone(null);
@@ -784,9 +854,7 @@ function StockTrade({ base, pots, fixed, onChanged }: { base: string; pots: Pot[
   }
 
   return (
-    <details className="section">
-      <summary>{fixed ? 'Купить или продать' : 'Купить или продать акции'}</summary>
-      <div className="section-body">
+    <Section inline={inline} title={fixed ? 'Купить или продать' : 'Купить или продать акции'}>
         {error && <Banner kind="error">{error}</Banner>}
         {done && <Banner kind="ok">{done}</Banner>}
         <p className="muted small">Тикер, количество и цена за одну акцию: в валюте акции или в {symbol()}, если брокер показывает в {symbol()}. Для нового тикера вклад появится сам. Сумма в {symbol()} считается по курсу Нацбанка на дату сделки, а если его нет, по последнему.</p>
@@ -798,7 +866,7 @@ function StockTrade({ base, pots, fixed, onChanged }: { base: string; pots: Pot[
           {!fixed && <input aria-label="Тикер" placeholder="Тикер: AAPL" autoCapitalize="characters" list="stock-tickers" value={ticker} onChange={(e) => pickTicker(e.target.value)} />}
           {!fixed && <datalist id="stock-tickers">{stocks.map((p) => <option key={p.id} value={p.ticker!}>{p.name}</option>)}</datalist>}
           <input aria-label="Количество" inputMode="decimal" placeholder={side === 'sell' && known ? `Шт., есть ${amount(owned, 4)}` : 'Шт.'} value={units} onChange={(e) => setUnits(numberInput(e.target.value, { decimals: 8 }))} />
-          <input aria-label="Цена за штуку" inputMode="decimal" placeholder="Цена за шт." value={price} onChange={(e) => setPrice(numberInput(e.target.value, { decimals: 6 }))} />
+          <input aria-label="Цена за штуку" inputMode="decimal" placeholder="Цена за шт." value={price} onChange={(e) => { const text = numberInput(e.target.value, { decimals: 6 }); setPrice(text); setPriceManual(text.trim() !== ''); }} />
           <select aria-label="Валюта цены" value={priceIn} onChange={(e) => setPriceIn(e.target.value as 'stock' | 'base')}>
             <option value="stock">{known ? symbol(known.currency) : 'в валюте акции'}</option>
             <option value="base">{symbol()}</option>
@@ -806,8 +874,15 @@ function StockTrade({ base, pots, fixed, onChanged }: { base: string; pots: Pot[
           <DateInput label="Дата сделки" value={date} onChange={setDate} />
           <Button small onClick={trade}>{side === 'buy' ? 'Купить' : 'Продать'}</Button>
         </div>
-      </div>
-    </details>
+        {known && (
+          <p className="muted small">
+            {quote.data
+              ? `Котировка ${known.ticker} на ${dayMonth(quote.data.priceDate ?? date)}: ${amount(quote.data.price)} ${symbol(quote.data.currency)}${quote.data.rate !== 1 ? ` ≈ ${amount(quote.data.price * quote.data.rate)} ${symbol()}` : ''}. ${priceManual ? 'Цена введена вручную.' : 'Цена подставлена, её можно поправить.'}`
+              : quote.error ? 'Котировка не загрузилась: введи цену сам.' : 'Загружаю котировку…'}
+            {total !== null && ` Сумма ≈ ${money(Math.round(total * 100))}.`}
+          </p>
+        )}
+    </Section>
   );
 }
 
@@ -820,12 +895,7 @@ function PotsManager({ base, pots, baseCurrency, onChanged }: { base: string; po
   const [openingBalance, setOpeningBalance] = useState('');
   const [openingUnits, setOpeningUnits] = useState('');
   const [pot, setPot] = useState<number | ''>('');
-  const [sum, setSum] = useState('');
-  const [units, setUnits] = useState('');
-  const [moveDate, setMoveDate] = useState(today());
-  const [deal, setDeal] = useState<'buy' | 'sell'>('buy');
   const selected = pots.find((p) => p.id === pot);
-  const isAsset = selected?.kind === 'asset';
 
   async function run(fn: () => Promise<unknown>) {
     try {
@@ -836,19 +906,6 @@ function PotsManager({ base, pots, baseCurrency, onChanged }: { base: string; po
     } catch (e) {
       setError((e as Error).message);
       return false;
-    }
-  }
-
-  async function move() {
-    const parsed = parseMoney(sum);
-    if (!pot || !parsed) return setError('Выбери вклад и сумму.');
-    // У актива количество сервер ставит сам: покупка, вложение или продажа целиком
-    const value = isAsset ? (deal === 'sell' ? -Math.abs(parsed) : Math.abs(parsed)) : parsed;
-    const count = !isAsset && units.trim() ? parseUnits(units) : 0;
-    if (count === null) return setError('Проверь количество.');
-    if (await run(() => api.post(`${base}/pots/${pot}/moves`, { date: moveDate, amount: value, units: count }))) {
-      setSum('');
-      setUnits('');
     }
   }
 
@@ -872,27 +929,14 @@ function PotsManager({ base, pots, baseCurrency, onChanged }: { base: string; po
         <details className="section">
           <summary>Перевести во вклад или продать</summary>
           <div className="section-body">
-            <p className="muted small">
-              {isAsset
-                ? 'Покупка актива забирает деньги из свободных средств, продажа возвращает их туда. В доходы и расходы сделка не попадает. Если актив уже есть, покупка добавится к уплаченному, например ремонт. Продажа отдаёт актив целиком.'
-                : 'Перевод забирает деньги из свободных средств, а стоимость считается по курсу или котировке и входит в общий итог. Чтобы забрать деньги или продать, укажи сумму и количество с минусом.'}
-            </p>
-            <div className="inline-form wrap">
-              <select aria-label="Вклад" value={pot} onChange={(e) => setPot(e.target.value ? Number(e.target.value) : '')}>
-                <option value="">Вклад</option>
-                {pots.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-              <input aria-label="Сумма в основной валюте" inputMode="text" placeholder={`Сумма, ${symbol()}`} value={sum} onChange={(e) => setSum(numberInput(e.target.value, { minus: true }))} />
-              {isAsset && (
-                <select aria-label="Сделка" value={deal} onChange={(e) => setDeal(e.target.value as 'buy' | 'sell')}>
-                  <option value="buy">{selected.units > 0 ? 'Вложение' : 'Покупка'}</option>
-                  {selected.units > 0 && <option value="sell">Продажа</option>}
-                </select>
-              )}
-              {selected && selected.kind !== 'cash' && !isAsset && <input aria-label="Количество" inputMode="text" placeholder={selected.kind === 'stock' ? 'Акций, шт.' : `Сумма, ${symbol(selected.currency)}`} value={units} onChange={(e) => setUnits(numberInput(e.target.value, { minus: true, decimals: 8 }))} />}
-              <DateInput label="Дата перевода" value={moveDate} onChange={setMoveDate} />
-              <Button small onClick={move}>Перевести</Button>
-            </div>
+            <p className="muted small">Покупка забирает деньги из свободных средств, продажа возвращает их туда. В доходы и расходы сделка не попадает. То же можно сделать в карточке вклада.</p>
+            <select aria-label="Вклад" value={pot} onChange={(e) => setPot(e.target.value ? Number(e.target.value) : '')}>
+              <option value="">Выбери вклад</option>
+              {pots.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            {selected && (selected.kind === 'stock' && selected.ticker
+              ? <StockTrade key={selected.id} inline base={base} pots={[selected]} fixed={selected} onChanged={onChanged} />
+              : <PotMove key={selected.id} inline base={base} pot={selected} onChanged={onChanged} />)}
           </div>
         </details>
       )}

@@ -278,6 +278,15 @@ export interface MemberStats {
   months: MemberMonth[];
   byFund: { userId: number; fundId: number; fundName: string; total: number; count: number }[];
 }
+/** Цена единицы на дату: price в currency, rate это курс currency к основной валюте. */
+export interface MarketPrice {
+  currency: string;
+  price: number;
+  priceDate: string | null;
+  rate: number;
+  rateOnDate: boolean;
+}
+
 export interface PotQuotes {
   /** Валюта цены: котировки акции или основная валюта базы для курса */
   currency: string;

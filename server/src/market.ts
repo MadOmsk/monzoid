@@ -395,6 +395,27 @@ export interface PotQuotes {
   moves: { id: number; date: string; amount: number; units: number; comment: string; price: number | null }[];
 }
 
+/** Дневные цены акции, раз в сутки на тикер. */
+async function dailyOf(source: MarketSource, ticker: string, today: string): ReturnType<MarketSource['daily']> {
+  const cache = dailyCache.get(source) ?? new Map();
+  dailyCache.set(source, cache);
+  let entry = cache.get(ticker);
+  if (entry?.day !== today) {
+    entry = { day: today, data: await source.daily(ticker) };
+    cache.set(ticker, entry);
+  }
+  return entry.data;
+}
+
+/** Цена акции на дату: последнее закрытие не позже даты, а без истории текущая котировка. null, если тикера нет. */
+export async function stockPriceOn(source: MarketSource, ticker: string, date: string, today: string): Promise<(Quote & { date: string }) | null> {
+  const data = await dailyOf(source, ticker, today);
+  const close = data?.closes.filter((c) => c.date <= date).at(-1);
+  if (data && close) return { price: close.price, currency: data.currency, date: close.date };
+  const quote = await source.quote(ticker);
+  return quote && { ...quote, date: today };
+}
+
 /** Котировка акции по дням или курс валюты по неделям за два года, с покупками для сравнения. */
 export async function potQuotes(db: Db, source: MarketSource, potId: number, today: string): Promise<PotQuotes> {
   const pot = get<{ kind: string; currency: string; ticker: string | null; base: string }>(
@@ -405,15 +426,9 @@ export async function potQuotes(db: Db, source: MarketSource, potId: number, tod
   let currency = pot.base;
   let points: PotQuotes['points'] = [];
   if (pot.ticker) {
-    const cache = dailyCache.get(source) ?? new Map();
-    dailyCache.set(source, cache);
-    let entry = cache.get(pot.ticker);
-    if (entry?.day !== today) {
-      entry = { day: today, data: await source.daily(pot.ticker) };
-      cache.set(pot.ticker, entry);
-    }
-    currency = entry.data?.currency ?? pot.currency;
-    points = entry.data?.closes ?? [];
+    const data = await dailyOf(source, pot.ticker, today);
+    currency = data?.currency ?? pot.currency;
+    points = data?.closes ?? [];
   } else if (pot.kind === 'currency') {
     const dates = Array.from({ length: QUOTE_WEEKS + 1 }, (_, i) => new Date(Date.parse(today) - (QUOTE_WEEKS - i) * 7 * 86_400_000).toISOString().slice(0, 10));
     for (let i = 0; i < dates.length; i += RATE_REQUESTS_AT_ONCE) {

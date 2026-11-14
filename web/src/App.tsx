@@ -10,9 +10,10 @@ import { HistoryScreen } from './history';
 import { ImportScreen } from './imports';
 import { MonthScreen, PlanScreen } from './month';
 import { MoreScreen } from './more';
+import { PotsScreen } from './pots';
 import { activeTheme, applyTheme, onSystemThemeChange } from './themes';
 
-type Tab = 'month' | 'entries' | 'history' | 'base' | 'more';
+type Tab = 'month' | 'entries' | 'history' | 'pots' | 'base' | 'more';
 type Overlay = { type: 'add'; reminder?: Reminder } | { type: 'reminder'; reminder?: Reminder } | { type: 'edit'; entry: any } | { type: 'import'; batchId?: number } | { type: 'plan' } | { type: 'settle' } | null;
 
 const LEDGER_KEY = 'monzoid.ledger';
@@ -232,6 +233,7 @@ function LedgerApp({ ledger, me, inviteError, onSwitch, onChanged }: { ledger: L
           <EntriesScreen key={version} base={base} ym={ym} onYm={setYm} period={entryPeriod} onPeriod={setEntryPeriod} kind={entryKind} onKind={setEntryKind} startYm={ledger.startYm} currentYm={me.currentYm} userId={me.user.id} isAdmin={isAdmin} locked={ledger.locked} fundId={fundFilter} onFund={setFundFilter} onSelecting={setSelecting} onEdit={(entry) => setOverlay({ type: 'edit', entry })} onReminder={(reminder) => setOverlay({ type: 'reminder', reminder })} onConfirm={(reminder) => setOverlay({ type: 'add', reminder })} />
         )}
         {tab === 'history' && <HistoryScreen key={version} base={base} startYm={ledger.startYm} currentYm={me.currentYm} isAdmin={isAdmin} currency={ledger.currency} />}
+        {tab === 'pots' && <PotsScreen key={`pots${version}`} base={base} isAdmin={isAdmin} currency={ledger.currency} currentYm={me.currentYm} />}
         {tab === 'base' && <MoreScreen key={`base${version}`} section="base" base={base} ledger={ledger} me={me} onSwitch={onSwitch} onChanged={onChanged} />}
         {tab === 'more' && <MoreScreen key={version} section="app" base={base} ledger={ledger} me={me} onSwitch={onSwitch} onChanged={onChanged} />}
       </div>
@@ -244,7 +246,7 @@ function LedgerApp({ ledger, me, inviteError, onSwitch, onChanged }: { ledger: L
         </>
       )}
       <nav className="tabs">
-        {([['month', 'Месяц'], ['history', 'Статистика'], ['base', 'База'], ['more', 'Ещё']] as [Tab, string][]).map(([id, label]) => {
+        {([['month', 'Месяц'], ['history', 'Статистика'], ['pots', 'Вклады'], ['base', 'База'], ['more', 'Ещё']] as [Tab, string][]).map(([id, label]) => {
           const active = id === 'month' ? tab === 'month' || tab === 'entries' : tab === id;
           return <button key={id} className={active ? 'active' : ''} onClick={() => (id === 'month' ? !active && setTab(monthSub) : setTab(id))}>{label}</button>;
         })}

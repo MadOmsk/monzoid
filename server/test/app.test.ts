@@ -655,6 +655,22 @@ describe('основная валюта и копилки', () => {
     expect(cash.moves[0].price).toBe(440);
   });
 
+  it('цена на дату для формы сделки: курс валюты и закрытие акции не позже даты', async () => {
+    const source = market({
+      ratesOn: async (date): Promise<Record<string, number>> => (date === '2026-10-03' ? { USD: 480 } : {}),
+      daily: async (ticker) => (ticker === 'AAPL' ? { currency: 'USD', closes: [{ date: '2026-10-01', price: 180 }, { date: '2026-10-02', price: 185 }, { date: '2026-10-06', price: 190 }] } : null),
+    });
+    const { db, call } = start(source);
+    await refreshMarket(db, source, '2026-11-02');
+    const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2026-10' })).body.id}`;
+    expect((await call('GET', `${base}/market/price?date=2026-10-03&currency=USD`)).body).toMatchObject({ currency: 'USD', price: 1, rate: 480, rateOnDate: true });
+    expect((await call('GET', `${base}/market/price?date=2026-10-04&currency=USD`)).body).toMatchObject({ rate: 500, rateOnDate: false });
+    // Выходной: берётся пятничное закрытие
+    expect((await call('GET', `${base}/market/price?date=2026-10-03&ticker=aapl`)).body).toMatchObject({ currency: 'USD', price: 185, priceDate: '2026-10-02', rate: 480 });
+    expect((await call('GET', `${base}/market/price?date=2026-10-03`)).status).toBe(400);
+    expect((await call('GET', `${base}/market/price?date=2026-10-03&ticker=NOPE`)).status).toBe(404);
+  });
+
   it('покупка акций по тикеру и цене: вклад заводится сам, сумма по курсу на дату, продать больше, чем есть, нельзя', async () => {
     const source = market({ ratesOn: async (date): Promise<Record<string, number>> => (date === '2026-10-03' ? { USD: 480 } : {}) });
     const { db, call } = start(source);

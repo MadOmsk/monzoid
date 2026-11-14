@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { useLoad, type MemberStats, type MonthReport, type Summary, type TagStats } from './api';
 import { useBack } from './back';
 import { BASE_CURRENCIES, cell, fundLabel, memberLabel, moneyRounded as money, monthName, monthShort, niceTicks, planShare, shiftYm, signedCell, signedRounded as signed, symbol, tone } from './format';
-import { PotsView } from './pots';
 import { Banner, Header, Segmented, Spinner, useRemembered } from './ui';
 
 interface Series<T> {
@@ -19,16 +18,16 @@ const TOTAL_SERIES: Series<MonthReport>[] = [
   { label: 'Вклады', cssVar: '--series-4', get: (m) => m.potsAfter },
 ];
 
-type View = 'totals' | 'funds' | 'pots' | 'incomes' | 'members' | 'tags';
+type View = 'totals' | 'funds' | 'incomes' | 'members' | 'tags';
 
 /** fundId страницы «Все фонды»: у настоящих фондов ID больше нуля */
 const ALL_FUNDS = 0;
 
 export function HistoryScreen({ base, startYm, currentYm, isAdmin, currency }: { base: string; startYm: string; currentYm: string; isAdmin: boolean; currency: string }) {
   const { data, error } = useLoad<{ months: MonthReport[] }>(`${base}/history`);
-  const [storedView, setCurrentView] = useRemembered<View | 'month'>(`${base}:view`, 'totals');
-  // Вкладка «Месяц» переехала на главный экран месяца: старое запомненное значение ведёт на итоги
-  const view: View = storedView === 'month' ? 'totals' : storedView;
+  const [storedView, setCurrentView] = useRemembered<View | 'month' | 'pots'>(`${base}:view`, 'totals');
+  // «Месяц» и «Вклады» переехали из статистики: старое запомненное значение ведёт на итоги
+  const view: View = storedView === 'month' || storedView === 'pots' ? 'totals' : storedView;
   const [fundId, setCurrentFund] = useRemembered<number | null>(`${base}:fund`, null);
   const [fundsMode, setFundsMode] = useRemembered<FundsMode>(`${base}:fundsMode`, 'balance');
   // Снятые линии графика итогов запоминаются в браузере для каждой базы
@@ -82,7 +81,7 @@ export function HistoryScreen({ base, startYm, currentYm, isAdmin, currency }: {
       </>
     );
   }
-  const tabs = <Segmented value={view} options={[['totals', 'Капитал'], ['funds', 'Фонды'], ['incomes', 'Доходы'], ['pots', 'Вклады/Активы'], ['members', 'Люди'], ['tags', 'Теги']]} onChange={setView} />;
+  const tabs = <Segmented value={view} options={[['totals', 'Капитал'], ['funds', 'Фонды'], ['incomes', 'Доходы'], ['members', 'Люди'], ['tags', 'Теги']]} onChange={setView} />;
   const noMonths = <p className="muted">Здесь появится динамика после закрытия первого месяца.</p>;
 
   return (
@@ -93,7 +92,6 @@ export function HistoryScreen({ base, startYm, currentYm, isAdmin, currency }: {
         {tabs}
         {view === 'funds' && months.length > 0 && <Segmented value={fundsMode} options={[['balance', 'Остатки'], ['spent', 'Факт'], ['planned', 'План']]} onChange={setFundsMode} />}
       </div>
-      {view === 'pots' && <PotsView base={base} isAdmin={isAdmin} currency={currency} months={months} currentYm={currentYm} />}
       {view === 'incomes' && <IncomesView base={base} />}
       {view === 'members' && <MembersView base={base} />}
       {view === 'tags' && <TagsView base={base} />}

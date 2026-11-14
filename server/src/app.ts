@@ -13,7 +13,7 @@ import { BACKUP_INTERVALS, backupSettings, sendBackup, updateBackupSettings, typ
 import { assertWritable, buildReports, closeMonth, createVirtualMember, DomainError, ensurePlans, hiddenFundIds, isClosed, isVirtual, leaveLedger, leavePreview, memberDebts, mergeVirtualMember, paceAlerts, reopenMonth, stopCredits, syncCredits, ymOf } from './domain.js';
 import { applyDecisions, createImport, getImport, listOpenImports, listSentImports, revertImport, saveDraft, type UploadedFile } from './imports.js';
 import { listQueue, processQueue, removeQueued } from './queue.js';
-import { backfillPotPrices, convert, ensureRatesOn, potQuotes, rateOn, saveQuote, valuePots, type MarketSource } from './market.js';
+import { backfillPotPrices, convert, ensureRatesOn, potQuotes, rateOn, saveQuote, stockPriceOn, valuePots, type MarketSource } from './market.js';
 import type { FundSuggester } from './statements/ai.js';
 import { noteEntries, noteSettlement, scheduleNext, seriesFields, skipReminder } from './notify.js';
 import { checkRefund, checkRefunded } from './refunds.js';
@@ -1311,6 +1311,29 @@ export function buildApp(options: AppOptions) {
     if (rate === null) throw new DomainError(`Нет курса ${currency} к ${base}.`);
     return { rate, onDate };
   }
+
+  // Цена единицы на дату для формы сделки: курс валюты или котировка акции, плюс курс к основной валюте
+  app.get(`${L}/market/price`, async (req) => {
+    const { ledgerId } = access(req);
+    const q = z
+      .object({ date: Day, currency: z.string().regex(/^[A-Z]{3}$/).optional(), ticker: z.string().trim().toUpperCase().regex(/^[A-Z0-9.\-^=]{1,15}$/).optional() })
+      .refine((v) => !!v.currency !== !!v.ticker, 'Нужна валюта или тикер')
+      .parse(req.query);
+    if (!options.market) throw new DomainError('Котировки недоступны.', 503);
+    const base = get<{ currency: string }>(db, 'SELECT currency FROM ledgers WHERE id = ?', ledgerId)!.currency;
+    const today = new Date().toISOString().slice(0, 10);
+    let currency = q.currency ?? '';
+    let price = 1;
+    let priceDate: string | null = null;
+    if (q.ticker) {
+      const quote = await stockPriceOn(options.market, q.ticker, q.date, today).catch(() => null);
+      if (!quote) throw new DomainError(`Нет котировки ${q.ticker}.`, 404);
+      ({ currency, price } = quote);
+      priceDate = quote.date;
+    }
+    const { rate, onDate } = await tradeRate(currency, base, q.date);
+    return { currency, price, priceDate, rate, rateOnDate: onDate !== null };
+  });
 
   app.post(`${L}/stocks/trade`, async (req) => {
     const { ledgerId, userId } = access(req, true);
