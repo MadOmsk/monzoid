@@ -1438,10 +1438,29 @@ export function buildApp(options: AppOptions) {
   app.patch(`${L}/pots/:potId`, async (req) => {
     const { ledgerId } = access(req, true);
     const potId = Number((req.params as any).potId);
-    potOf(ledgerId, potId);
-    const { name } = z.object({ name: Name }).parse(req.body);
-    if (get(db, 'SELECT 1 x FROM pots WHERE ledger_id = ? AND name = ? AND id != ?', ledgerId, name, potId)) throw new DomainError('Вклад с таким названием уже есть.');
-    run(db, 'UPDATE pots SET name = ? WHERE id = ?', name, potId);
+    const pot = potOf(ledgerId, potId);
+    const body = z
+      .object({ name: Name.optional(), openingBalance: Money.optional(), openingUnits: z.number().finite().optional(), recalc: z.boolean().default(false) })
+      .parse(req.body);
+    if (body.name !== undefined) {
+      if (get(db, 'SELECT 1 x FROM pots WHERE ledger_id = ? AND name = ? AND id != ?', ledgerId, body.name, potId)) throw new DomainError('Вклад с таким названием уже есть.');
+      run(db, 'UPDATE pots SET name = ? WHERE id = ?', body.name, potId);
+    }
+    // Начальный остаток входит в итоги с первого месяца базы: если он закрыт, нужно согласие на пересчёт
+    if (body.openingBalance !== undefined || body.openingUnits !== undefined) {
+      const startYm = get<{ start_ym: string }>(db, 'SELECT start_ym FROM ledgers WHERE id = ?', ledgerId)!.start_ym;
+      assertWritable(db, ledgerId, `${startYm}-01`, body.recalc);
+      const current = get<{ opening_balance: number; opening_units: number }>(db, 'SELECT opening_balance, opening_units FROM pots WHERE id = ?', potId)!;
+      const balance = body.openingBalance ?? current.opening_balance;
+      if (balance < 0) throw new DomainError('Начальная сумма не может быть меньше нуля.');
+      // У актива количество 1 или 0 ставит сервер; у вклада в основной валюте количества нет
+      const units = pot.kind === 'asset' ? (balance > 0 ? 1 : 0) : pot.kind === 'cash' ? 0 : body.openingUnits ?? current.opening_units;
+      if (units < 0) throw new DomainError('Начальное количество не может быть меньше нуля.');
+      tx(db, () => {
+        run(db, 'UPDATE pots SET opening_balance = ?, opening_units = ? WHERE id = ?', balance, units, potId);
+        if (pot.kind === 'asset') assertAssetUnits(potId);
+      });
+    }
     return { ok: true };
   });
 

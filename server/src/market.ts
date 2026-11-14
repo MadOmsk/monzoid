@@ -307,6 +307,9 @@ export interface PotValue {
   balance: number;
   /** Единицы валюты или число акций */
   units: number;
+  /** Что было на старте базы: вложено в основной валюте и количество */
+  openingBalance: number;
+  openingUnits: number;
   /** Цена единицы: котировка акции или курс валюты */
   price: number | null;
   /** Оценка в основной валюте; null, если нет курса */
@@ -355,7 +358,7 @@ export function valuePots(db: Db, ledgerId: number): PotValue[] {
   const base = get<{ currency: string }>(db, 'SELECT currency FROM ledgers WHERE id = ?', ledgerId)!.currency;
   const pots = all<Omit<PotValue, 'price' | 'value' | 'rateDate'> & { counted: number }>(
     db,
-    `SELECT p.id, p.name, p.kind, p.currency, p.ticker,
+    `SELECT p.id, p.name, p.kind, p.currency, p.ticker, p.opening_balance openingBalance, p.opening_units openingUnits,
        p.opening_balance + COALESCE((SELECT SUM(m.amount) FROM pot_moves m WHERE m.pot_id = p.id AND m.inactive_at IS NULL), 0) balance,
        p.opening_units + COALESCE((SELECT SUM(m.units) FROM pot_moves m WHERE m.pot_id = p.id AND m.inactive_at IS NULL), 0) units,
        p.opening_units != 0 OR EXISTS (SELECT 1 FROM pot_moves m WHERE m.pot_id = p.id AND m.units != 0 AND m.inactive_at IS NULL) counted

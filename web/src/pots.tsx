@@ -197,6 +197,7 @@ function PotDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; po
       <Header title={pot.name} onBack={onBack} />
       <p className="muted small">{potFacts(pot)}</p>
       {isAdmin && <RenamePot base={base} pot={pot} onChanged={onChanged} />}
+      {isAdmin && <OpeningEditor base={base} pot={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />}
       <div className="tiles">
         <div className="tile"><span>Стоимость</span><strong>{pot.value !== null ? money(pot.value) : 'нет курса'}</strong><small>вложено {money(pot.balance)}</small></div>
         <div className="tile">
@@ -235,6 +236,9 @@ function PotDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; po
       {data && (
         <>
           <h2>{pot.kind === 'cash' ? 'Переводы' : 'Покупки и продажи'}</h2>
+          {isAdmin && (pot.kind === 'stock' && pot.ticker
+            ? <StockTrade base={base} pots={[pot]} fixed={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />
+            : <PotMove base={base} pot={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />)}
           <Deals base={base} pot={pot} moves={data.moves} unit={unit} isAdmin={isAdmin} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />
         </>
       )}
@@ -359,10 +363,110 @@ function AssetDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; 
       )}
 
       <h2>Сделки</h2>
+      {isAdmin && <PotMove base={base} pot={pot} onChanged={dealsChanged} />}
+      {isAdmin && <OpeningEditor base={base} pot={pot} onChanged={dealsChanged} />}
       {deals.error && <Banner kind="error">{deals.error}</Banner>}
       {deals.data?.moves.length === 0 && <p className="muted">Сделок нет: актив был до начала учёта.</p>}
       {!!deals.data?.moves.length && <Deals base={base} pot={pot} moves={deals.data.moves} unit={symbol()} isAdmin={isAdmin} onChanged={dealsChanged} />}
     </>
+  );
+}
+
+/** Покупка и продажа прямо в карточке вклада (валюта, вклад в основной валюте, актив). */
+function PotMove({ base, pot, onChanged }: { base: string; pot: Pot; onChanged: () => Promise<void> }) {
+  const [side, setSide] = useState<'buy' | 'sell'>('buy');
+  const [sum, setSum] = useState('');
+  const [units, setUnits] = useState('');
+  const [date, setDate] = useState(today());
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const asset = pot.kind === 'asset';
+  const counted = pot.kind === 'currency';
+  const owned = pot.units > 0;
+  const words = asset
+    ? { buy: owned ? 'Вложение' : 'Покупка', sell: 'Продажа' }
+    : pot.kind === 'cash' ? { buy: 'Положить', sell: 'Забрать' } : { buy: 'Купить', sell: 'Продать' };
+
+  async function save() {
+    const value = parseMoney(sum);
+    if (!value || value <= 0) return setError(`Укажи сумму в ${symbol()}.`);
+    const count = counted ? parseUnits(units) : 0;
+    if (count === null || (counted && count <= 0)) return setError(`Укажи, сколько ${symbol(pot.currency)}.`);
+    const sign = side === 'buy' ? 1 : -1;
+    try {
+      const res = await withRecalc((recalc) => api.post(`${base}/pots/${pot.id}/moves`, { date, amount: sign * value, units: sign * count, comment: '', recalc }));
+      if (res === null) return;
+      setError(null);
+      setDone(`${side === 'buy' ? words.buy : words.sell}: ${money(value)}${counted ? ` (${amount(count)} ${symbol(pot.currency)})` : ''}. ${side === 'buy' ? 'Деньги взяты из свободных средств.' : 'Деньги вернулись в свободные средства.'}`);
+      setSum('');
+      setUnits('');
+      await onChanged();
+    } catch (e) {
+      setDone(null);
+      setError((e as Error).message);
+    }
+  }
+
+  return (
+    <details className="section">
+      <summary>{asset ? (owned ? 'Вложение или продажа' : 'Покупка') : `${words.buy} или ${words.sell.toLowerCase()}`}</summary>
+      <div className="section-body">
+        {error && <Banner kind="error">{error}</Banner>}
+        {done && <Banner kind="ok">{done}</Banner>}
+        {(!asset || owned) && <Segmented value={side} options={[['buy', words.buy], ['sell', words.sell]]} onChange={setSide} />}
+        {asset && side === 'sell' && <p className="muted small">Продажа отдаёт актив целиком.</p>}
+        <div className="inline-form wrap">
+          <input aria-label={`Сумма, ${symbol()}`} inputMode="decimal" placeholder={`Сумма, ${symbol()}`} value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />
+          {counted && <input aria-label={`Сколько, ${symbol(pot.currency)}`} inputMode="decimal" placeholder={`Сколько, ${symbol(pot.currency)}`} value={units} onChange={(e) => setUnits(numberInput(e.target.value, { decimals: 8 }))} />}
+          <DateInput label="Дата" value={date} onChange={setDate} />
+          <Button small onClick={save}>{side === 'buy' ? words.buy : words.sell}</Button>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+/** Начальный остаток вклада: что было на старте базы. Входит в итоги с первого месяца, со свободных не списывается. */
+function OpeningEditor({ base, pot, onChanged }: { base: string; pot: Pot; onChanged: () => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [balance, setBalance] = useState('');
+  const [count, setCount] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const counted = pot.kind === 'currency' || pot.kind === 'stock';
+  const unitLabel = pot.kind === 'stock' ? 'шт.' : symbol(pot.currency);
+  const summary = `${money(pot.openingBalance)}${counted ? ` · ${amount(pot.openingUnits, 4)} ${unitLabel}` : ''}`;
+  if (!editing) {
+    return (
+      <button type="button" className="link" onClick={() => { setBalance(toInput(pot.openingBalance)); setCount(pot.openingUnits ? String(pot.openingUnits).replace('.', ',') : ''); setError(null); setEditing(true); }}>
+        Начальный остаток: {summary}
+      </button>
+    );
+  }
+  async function save() {
+    const value = balance.trim() ? parseMoney(balance) : 0;
+    if (value === null || value < 0) return setError('Проверь сумму.');
+    const units = counted && count.trim() ? parseUnits(count) : 0;
+    if (units === null || units < 0) return setError('Проверь количество.');
+    try {
+      const res = await withRecalc((recalc) => api.patch(`${base}/pots/${pot.id}`, { openingBalance: value, ...(counted ? { openingUnits: units } : {}), recalc }));
+      if (res === null) return;
+      setEditing(false);
+      await onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  return (
+    <div className="stack">
+      {error && <Banner kind="error">{error}</Banner>}
+      <p className="muted small">{pot.kind === 'asset' ? 'Стоимость актива, который был на старте базы.' : 'Что было во вкладе на старте базы.'} Входит в итоги с первого месяца и не списывается со свободных средств, поэтому меняет «Всего» во всех месяцах.</p>
+      <label className="field"><span>{pot.kind === 'asset' ? `Стоимость, ${symbol()}` : `Вложено, ${symbol()}`}</span><input inputMode="decimal" value={balance} onChange={(e) => setBalance(numberInput(e.target.value))} /></label>
+      {counted && <label className="field"><span>Было, {unitLabel}</span><input inputMode="decimal" value={count} onChange={(e) => setCount(numberInput(e.target.value, { decimals: 8 }))} /></label>}
+      <div className="inline-form">
+        <Button small onClick={save}>Сохранить</Button>
+        <Button small onClick={() => setEditing(false)}>Отмена</Button>
+      </div>
+    </div>
   );
 }
 
@@ -628,11 +732,12 @@ function PriceChart({ points, buys, average, unit, period }: {
  * Покупка и продажа акций по тикеру: штуки и цена за штуку в валюте акции. Вклад под новый тикер сервер заводит сам,
  * сумма в основной валюте считается по курсу на дату сделки.
  */
-function StockTrade({ base, pots, onChanged }: { base: string; pots: Pot[]; onChanged: () => Promise<void> }) {
+/** fixed: форма внутри карточки акции, тикер уже выбран */
+function StockTrade({ base, pots, fixed, onChanged }: { base: string; pots: Pot[]; fixed?: Pot; onChanged: () => Promise<void> }) {
   const stocks = pots.filter((p) => p.kind === 'stock' && p.ticker);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-  const [ticker, setTicker] = useState('');
+  const [ticker, setTicker] = useState(fixed?.ticker ?? '');
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
   const [units, setUnits] = useState('');
   const [price, setPrice] = useState('');
@@ -680,7 +785,7 @@ function StockTrade({ base, pots, onChanged }: { base: string; pots: Pot[]; onCh
 
   return (
     <details className="section">
-      <summary>Купить или продать акции</summary>
+      <summary>{fixed ? 'Купить или продать' : 'Купить или продать акции'}</summary>
       <div className="section-body">
         {error && <Banner kind="error">{error}</Banner>}
         {done && <Banner kind="ok">{done}</Banner>}
@@ -690,8 +795,8 @@ function StockTrade({ base, pots, onChanged }: { base: string; pots: Pot[]; onCh
             <option value="buy">Покупка</option>
             <option value="sell">Продажа</option>
           </select>
-          <input aria-label="Тикер" placeholder="Тикер: AAPL" autoCapitalize="characters" list="stock-tickers" value={ticker} onChange={(e) => pickTicker(e.target.value)} />
-          <datalist id="stock-tickers">{stocks.map((p) => <option key={p.id} value={p.ticker!}>{p.name}</option>)}</datalist>
+          {!fixed && <input aria-label="Тикер" placeholder="Тикер: AAPL" autoCapitalize="characters" list="stock-tickers" value={ticker} onChange={(e) => pickTicker(e.target.value)} />}
+          {!fixed && <datalist id="stock-tickers">{stocks.map((p) => <option key={p.id} value={p.ticker!}>{p.name}</option>)}</datalist>}
           <input aria-label="Количество" inputMode="decimal" placeholder={side === 'sell' && known ? `Шт., есть ${amount(owned, 4)}` : 'Шт.'} value={units} onChange={(e) => setUnits(numberInput(e.target.value, { decimals: 8 }))} />
           <input aria-label="Цена за штуку" inputMode="decimal" placeholder="Цена за шт." value={price} onChange={(e) => setPrice(numberInput(e.target.value, { decimals: 6 }))} />
           <select aria-label="Валюта цены" value={priceIn} onChange={(e) => setPriceIn(e.target.value as 'stock' | 'base')}>

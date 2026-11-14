@@ -39,6 +39,29 @@ async function ledger(call: ReturnType<typeof setup>['call']) {
   return { base, fund };
 }
 
+describe('начальный остаток вклада', () => {
+  it('меняется в карточке вклада; закрытый первый месяц требует согласия на пересчёт', async () => {
+    const { call } = setup();
+    const { base } = await ledger(call);
+    const pot = (await call(1, 'POST', `${base}/pots`, { name: 'Доллары', currency: 'USD', openingBalance: k(1000), openingUnits: 2 })).body.id;
+    const total = async () => (await call(1, 'GET', `${base}/summary?ym=2026-10`)).body.report.potsInvested;
+    expect(await total()).toBe(k(1000));
+
+    expect((await call(1, 'PATCH', `${base}/pots/${pot}`, { openingBalance: k(1500), openingUnits: 3 })).status).toBe(200);
+    expect(await total()).toBe(k(1500));
+    const listed = (await call(1, 'GET', `${base}/pots`)).body.find((p: { id: number }) => p.id === pot);
+    expect(listed).toMatchObject({ openingBalance: k(1500), openingUnits: 3, units: 3 });
+
+    expect((await call(1, 'PATCH', `${base}/pots/${pot}`, { openingBalance: -1 })).status).toBe(400);
+    expect((await call(1, 'POST', `${base}/months/2026-10/close`)).status).toBe(200);
+    expect((await call(1, 'PATCH', `${base}/pots/${pot}`, { openingBalance: k(2000) })).status).toBe(409);
+    expect((await call(1, 'PATCH', `${base}/pots/${pot}`, { openingBalance: k(2000), recalc: true })).status).toBe(200);
+    expect(await total()).toBe(k(2000));
+    // Название меняется как раньше, без пересчёта
+    expect((await call(1, 'PATCH', `${base}/pots/${pot}`, { name: 'Баксы' })).status).toBe(200);
+  });
+});
+
 describe('архивный фонд', () => {
   it('новый расход в архивный фонд не проходит, старую запись в нём можно править', async () => {
     const { call, db } = setup();

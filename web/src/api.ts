@@ -156,6 +156,9 @@ export interface Pot {
   ticker: string | null;
   balance: number;
   units: number;
+  /** Что было на старте базы: вложено в основной валюте и количество */
+  openingBalance: number;
+  openingUnits: number;
   price: number | null;
   value: number | null;
   rateDate: string | null;
