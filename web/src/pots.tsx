@@ -115,7 +115,7 @@ function PotsView({ base, isAdmin, currency, months = [], currentYm }: { base: s
   return (
     <>
       {data.length === 0 && <p className="muted">Вкладов пока нет. Их можно завести ниже: валюту, акции, деньги в основной валюте или активы вроде квартиры и машины.</p>}
-      {present.length > 1 && <Segmented<Tab> value={current} options={present} onChange={setTab} />}
+      {present.length > 1 && <div className="sticky-head"><Segmented<Tab> value={current} options={present} onChange={setTab} /></div>}
       {shown.length > 0 && (
         <div className="tiles">
           <div className="tile full">
