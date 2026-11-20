@@ -430,6 +430,13 @@ export function openDb(path: string): Db {
     // Сделки по вкладам правятся и снимаются как остальные записи: снятая получает inactive_at
     db.exec('ALTER TABLE pot_moves ADD COLUMN inactive_at TEXT');
   }
+  if (!all<{ name: string }>(db, 'PRAGMA table_info(pot_moves)').some((c) => c.name === 'to_pot_id')) {
+    // Продажа актива может сразу класть деньги во вклад в основной валюте (to_pot_id). Тогда в том вкладе появляются
+    // записи, которые следуют за продажей (sale_move_id) и за расходами по активу после неё (entry_id); их ставит proceeds.ts
+    db.exec('ALTER TABLE pot_moves ADD COLUMN to_pot_id INTEGER REFERENCES pots(id)');
+    db.exec('ALTER TABLE pot_moves ADD COLUMN sale_move_id INTEGER REFERENCES pot_moves(id)');
+    db.exec('ALTER TABLE pot_moves ADD COLUMN entry_id INTEGER REFERENCES entries(id)');
+  }
   const batchColumns = all<{ name: string }>(db, 'PRAGMA table_info(import_batches)');
   if (!batchColumns.some((c) => c.name === 'draft')) {
     // Черновик проверки выписки сохраняется при каждом изменении; sent_at отмечает отправку в учёт

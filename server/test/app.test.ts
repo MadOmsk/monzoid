@@ -575,6 +575,58 @@ describe('основная валюта и копилки', () => {
     expect(db.prepare('SELECT COUNT(*) n FROM pot_prices').get()).toEqual({ n: 0 });
   });
 
+  it('продажа актива во вклад: деньги и расходы после продажи идут через вклад, свободные не меняются', async () => {
+    const { db, call } = start();
+    await refreshMarket(db, market(), '2026-11-02');
+    const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2026-09' })).body.id}`;
+    const flat = (await call('POST', `${base}/pots`, { name: 'Квартира', kind: 'asset', openingBalance: k(30000) })).body.id;
+    const cash = (await call('POST', `${base}/pots`, { name: 'Деньги от сделок', kind: 'cash' })).body.id;
+    const usd = (await call('POST', `${base}/pots`, { name: 'Доллары', kind: 'currency', currency: 'USD' })).body.id;
+    const report = async (ym: string) => (await call('GET', `${base}/summary?ym=${ym}`)).body.report;
+    const balance = async (id: number) => (await call('GET', `${base}/pots`)).body.find((p: any) => p.id === id).balance;
+    const linked = async () => (await call('GET', `${base}/pots/${cash}/quotes`)).body.moves;
+
+    // Деньги кладутся только во вклад в основной валюте и только при продаже
+    expect((await call('POST', `${base}/pots/${flat}/moves`, { date: '2026-09-10', amount: -k(33000), toPotId: usd })).status).toBe(404);
+    expect((await call('POST', `${base}/pots/${cash}/moves`, { date: '2026-09-10', amount: k(10), toPotId: cash })).status).toBe(400);
+    const sale = (await call('POST', `${base}/pots/${flat}/moves`, { date: '2026-09-10', amount: -k(33000), toPotId: cash })).body.id;
+    expect(await balance(cash)).toBe(k(33000));
+    expect((await report('2026-09')).freeAfter).toBe(0);
+
+    // Расход по активу с даты продажи забирается из вклада, более ранний идёт из свободных как раньше
+    const fee = (await call('POST', `${base}/entries`, { date: '2026-09-12', kind: 'expense', amount: k(500), potId: flat, comment: 'агентские' })).body.id;
+    await call('POST', `${base}/entries`, { date: '2026-09-05', kind: 'expense', amount: k(100), potId: flat, comment: 'оценка' });
+    expect(await balance(cash)).toBe(k(32500));
+    expect((await report('2026-09')).freeAfter).toBe(-k(100));
+    const moves = await linked();
+    expect(moves.map((m: any) => [m.amount, m.comment, m.linked])).toEqual([[k(33000), 'Продажа: Квартира', true], [-k(500), 'агентские: Квартира', true]]);
+    // Эти записи следуют за продажей и руками не правятся
+    expect((await call('PUT', `${base}/pots/${cash}/moves/${moves[1].id}`, { date: '2026-09-12', amount: -k(1), comment: '' })).status).toBe(400);
+    expect((await call('DELETE', `${base}/pots/${cash}/moves/${moves[1].id}`)).status).toBe(400);
+
+    // Правка расхода и продажи переносится во вклад
+    await call('PUT', `${base}/entries/${fee}`, { date: '2026-09-12', kind: 'expense', amount: k(700), potId: flat, comment: 'агентские' });
+    expect(await balance(cash)).toBe(k(32300));
+    await call('PUT', `${base}/pots/${flat}/moves/${sale}`, { date: '2026-09-10', amount: -k(34000), comment: '' });
+    expect(await balance(cash)).toBe(k(33300));
+    // Без вклада всё возвращается в свободные
+    await call('PUT', `${base}/pots/${flat}/moves/${sale}`, { date: '2026-09-10', amount: -k(34000), comment: '', toPotId: null });
+    expect(await balance(cash)).toBe(0);
+    expect((await linked())).toEqual([]);
+    expect((await report('2026-09')).freeAfter).toBe(k(34000 - 700 - 100));
+
+    // Закрытый месяц: смена вклада спрашивает согласие и попадает в журнал, откат возвращает как было
+    await call('POST', `${base}/months/2026-09/close`);
+    expect((await call('PUT', `${base}/pots/${flat}/moves/${sale}`, { date: '2026-09-10', amount: -k(34000), comment: '', toPotId: cash })).status).toBe(409);
+    expect((await call('PUT', `${base}/pots/${flat}/moves/${sale}`, { date: '2026-09-10', amount: -k(34000), comment: '', toPotId: cash, recalc: true })).status).toBe(200);
+    expect(await balance(cash)).toBe(k(33300));
+    expect((await report('2026-09')).freeAfter).toBe(-k(100));
+    const change = (await call('GET', `${base}/changes`)).body[0];
+    expect(change).toMatchObject({ kind: 'pot_move', action: 'update', after: { toPotId: cash } });
+    expect((await call('POST', `${base}/changes/${change.id}/revert`)).status).toBe(200);
+    expect(await balance(cash)).toBe(0);
+  });
+
   it('сделки вклада правятся и снимаются, в закрытом месяце через журнал; вклад переименовывается', async () => {
     const { db, call } = start();
     await refreshMarket(db, market(), '2026-11-02');
@@ -644,7 +696,7 @@ describe('основная валюта и копилки', () => {
     await call('POST', `${base}/pots/${usd}/moves`, { date: '2026-10-06', amount: k(44000), units: 100 });
 
     const stock = (await call('GET', `${base}/pots/${apple}/quotes`)).body;
-    expect(stock).toEqual({ currency: 'USD', points: [{ date: '2026-10-01', price: 190 }, { date: '2026-10-02', price: 200 }], moves: [{ id: expect.any(Number), date: '2026-10-06', amount: k(90000), units: 2, comment: '', price: 100 }] });
+    expect(stock).toEqual({ currency: 'USD', points: [{ date: '2026-10-01', price: 190 }, { date: '2026-10-02', price: 200 }], moves: [{ id: expect.any(Number), date: '2026-10-06', amount: k(90000), units: 2, comment: '', toPotId: null, linked: false, price: 100 }] });
     await call('GET', `${base}/pots/${apple}/quotes`);
     expect(dailyCalls).toBe(1);
 

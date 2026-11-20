@@ -13,6 +13,7 @@ import { BACKUP_INTERVALS, backupSettings, sendBackup, updateBackupSettings, typ
 import { assertWritable, buildReports, closeMonth, createVirtualMember, DomainError, ensurePlans, hiddenFundIds, isClosed, isVirtual, leaveLedger, leavePreview, memberDebts, mergeVirtualMember, paceAlerts, reopenMonth, stopCredits, syncCredits, ymOf } from './domain.js';
 import { applyDecisions, createImport, getImport, listOpenImports, listSentImports, revertImport, saveDraft, type UploadedFile } from './imports.js';
 import { listQueue, processQueue, removeQueued } from './queue.js';
+import { syncProceeds } from './proceeds.js';
 import { backfillPotPrices, convert, ensureRatesOn, potQuotes, rateOn, saveQuote, stockPriceOn, valuePots, type MarketSource } from './market.js';
 import type { FundSuggester } from './statements/ai.js';
 import { noteEntries, noteSettlement, scheduleNext, seriesFields, skipReminder } from './notify.js';
@@ -169,6 +170,16 @@ export function buildApp(options: AppOptions) {
     return reply.status(500).send({ error: 'Внутренняя ошибка сервера' });
   });
 
+  // После успешной записи в базе деньги от продажи актива во вклад приводятся в соответствие с продажами и расходами:
+  // так их не нужно помнить в каждом маршруте, который меняет операции или сделки
+  app.addHook('onSend', async (req, reply, payload) => {
+    const ledgerId = Number((req.params as { ledgerId?: string } | undefined)?.ledgerId);
+    if (req.method !== 'GET' && reply.statusCode < 400 && ledgerId && !get<{ locked: number }>(db, 'SELECT locked FROM ledgers WHERE id = ?', ledgerId)?.locked) {
+      tx(db, () => syncProceeds(db, ledgerId));
+    }
+    return payload;
+  });
+
   function authenticate(req: FastifyRequest): { id: number; name: string } {
     const dev = req.headers['x-dev-user'];
     if (options.devAuth && typeof dev === 'string' && /^\d+$/.test(dev)) {
@@ -209,6 +220,8 @@ export function buildApp(options: AppOptions) {
     if (locked && req.method !== 'GET' && !unlocking && !leaving && !backup) throw new DomainError('База заблокирована. Сними блокировку в настройках базы.', 423);
     // Начисления появляются сами с наступлением месяца и следуют за планом
     if (!locked) tx(db, () => syncCredits(db, ledgerId, currentYm()));
+    // Деньги от продажи актива во вклад следуют за продажей и расходами по активу; после записи их ставит хук onSend
+    if (!locked) tx(db, () => syncProceeds(db, ledgerId));
     return { userId: user.id, ledgerId, isAdmin };
   }
 
@@ -1270,13 +1283,37 @@ export function buildApp(options: AppOptions) {
     }
   };
 
-  const MoveBody = z.object({ date: Day, amount: Money.refine((v) => v !== 0, 'Сумма не может быть нулевой'), units: z.number().finite().default(0), comment: Comment, recalc: z.boolean().default(false) });
+  const MoveBody = z.object({
+    date: Day,
+    amount: Money.refine((v) => v !== 0, 'Сумма не может быть нулевой'),
+    units: z.number().finite().default(0),
+    comment: Comment,
+    // Продажа актива: вклад в основной валюте, куда сразу идут деньги; null значит в свободные
+    toPotId: z.number().int().nullable().optional(),
+    recalc: z.boolean().default(false),
+  });
+
+  /** Вклад для денег от продажи: только продажа актива и только вклад в основной валюте этой базы. */
+  const proceedsPot = (ledgerId: number, potKind: string, amount: number, toPotId: number | null | undefined) => {
+    if (!toPotId) return null;
+    if (potKind !== 'asset' || amount >= 0) throw new DomainError('Вклад для денег выбирается только при продаже актива.');
+    if (!get(db, `SELECT 1 x FROM pots WHERE id = ? AND ledger_id = ? AND kind = 'cash'`, toPotId, ledgerId)) throw new DomainError('Деньги от продажи можно положить только во вклад в основной валюте.', 404);
+    return toPotId;
+  };
+
+  /** Записи, которые следуют за продажей актива, руками не правятся. */
+  const assertOwnMove = (moveId: number) => {
+    if (get(db, 'SELECT 1 x FROM pot_moves WHERE id = ? AND sale_move_id IS NOT NULL', moveId)) {
+      throw new DomainError('Эта запись следует за продажей актива: поправь продажу или расход в карточке актива.');
+    }
+  };
 
   app.post(`${L}/pots/:potId/moves`, async (req) => {
     const { ledgerId, userId } = access(req, true);
     const potId = Number((req.params as any).potId);
     const body = MoveBody.parse(req.body);
     const pot = potOf(ledgerId, potId);
+    const toPotId = proceedsPot(ledgerId, pot.kind, body.amount, body.toPotId);
     assertWritable(db, ledgerId, body.date, body.recalc);
     return tx(db, () => {
       let units = body.units;
@@ -1293,7 +1330,7 @@ export function buildApp(options: AppOptions) {
         else if (held > 0) units = -held;
         else throw new DomainError('На эту дату актива нет: продавать нечего.');
       }
-      const id = Number(run(db, 'INSERT INTO pot_moves (pot_id, date, amount, units, comment) VALUES (?, ?, ?, ?, ?)', potId, body.date, body.amount, units, body.comment).lastInsertRowid);
+      const id = Number(run(db, 'INSERT INTO pot_moves (pot_id, date, amount, units, comment, to_pot_id) VALUES (?, ?, ?, ?, ?, ?)', potId, body.date, body.amount, units, body.comment, toPotId).lastInsertRowid);
       if (pot.kind === 'asset') assertAssetUnits(potId);
       if (touchesClosed(db, ledgerId, body.date)) logChange(db, ledgerId, userId, 'pot_move', id, 'create', null, snapshot(db, 'pot_move', id));
       return { id };
@@ -1414,8 +1451,14 @@ export function buildApp(options: AppOptions) {
       price: z.number().finite().positive('Проверь цену за штуку').optional(),
       priceIn: z.enum(['stock', 'base']).default('stock'),
     }).parse(req.body);
-    const row = get<{ date: string; amount: number; units: number }>(db, 'SELECT date, amount, units FROM pot_moves WHERE id = ? AND pot_id = ? AND inactive_at IS NULL', moveId, potId);
+    const row = get<{ date: string; amount: number; units: number; toPotId: number | null }>(
+      db,
+      'SELECT date, amount, units, to_pot_id toPotId FROM pot_moves WHERE id = ? AND pot_id = ? AND inactive_at IS NULL',
+      moveId,
+      potId,
+    );
     if (!row) throw new DomainError('Сделка не найдена', 404);
+    assertOwnMove(moveId);
     if (body.price !== undefined) {
       if (pot.kind !== 'stock') throw new DomainError('Цена за штуку бывает только у акций.');
       if (!body.units) throw new DomainError('Укажи количество акций.');
@@ -1426,14 +1469,16 @@ export function buildApp(options: AppOptions) {
     }
     const units = pot.kind === 'asset' ? row.units : body.units;
     if (pot.kind === 'asset' && Math.sign(body.amount) !== Math.sign(row.amount)) throw new DomainError('Покупку нельзя превратить в продажу и наоборот: убери сделку и добавь новую.');
-    const changed = body.date !== row.date || body.amount !== row.amount || units !== row.units;
+    // Без toPotId в запросе вклад для денег остаётся прежним
+    const toPotId = body.toPotId === undefined ? row.toPotId : proceedsPot(ledgerId, pot.kind, body.amount, body.toPotId);
+    const changed = body.date !== row.date || body.amount !== row.amount || units !== row.units || toPotId !== row.toPotId;
     if (changed) {
       assertWritable(db, ledgerId, row.date, body.recalc);
       assertWritable(db, ledgerId, body.date, body.recalc);
     }
     tx(db, () => {
       const before = snapshot(db, 'pot_move', moveId);
-      run(db, 'UPDATE pot_moves SET date = ?, amount = ?, units = ?, comment = ? WHERE id = ?', body.date, body.amount, units, body.comment, moveId);
+      run(db, 'UPDATE pot_moves SET date = ?, amount = ?, units = ?, comment = ?, to_pot_id = ? WHERE id = ?', body.date, body.amount, units, body.comment, toPotId, moveId);
       if (pot.kind === 'asset') assertAssetUnits(potId);
       if (changed && touchesClosed(db, ledgerId, row.date, body.date)) logChange(db, ledgerId, userId, 'pot_move', moveId, 'update', before, snapshot(db, 'pot_move', moveId));
     });
@@ -1447,6 +1492,7 @@ export function buildApp(options: AppOptions) {
     const pot = potOf(ledgerId, potId);
     const row = get<{ date: string }>(db, 'SELECT date FROM pot_moves WHERE id = ? AND pot_id = ? AND inactive_at IS NULL', moveId, potId);
     if (!row) throw new DomainError('Сделка не найдена', 404);
+    assertOwnMove(moveId);
     assertWritable(db, ledgerId, row.date, recalcQuery(req));
     tx(db, () => {
       const before = snapshot(db, 'pot_move', moveId);

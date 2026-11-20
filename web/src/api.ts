@@ -291,7 +291,8 @@ export interface PotQuotes {
   /** Валюта цены: котировки акции или основная валюта базы для курса */
   currency: string;
   points: { date: string; price: number }[];
-  moves: { id: number; date: string; amount: number; units: number; comment: string; price: number | null }[];
+  /** toPotId: продажа актива положила деньги в этот вклад; linked: запись следует за продажей актива и руками не правится */
+  moves: { id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: boolean; price: number | null }[];
 }
 
 /** Запись до или после изменения; у корректировки нет фонда и вида. */

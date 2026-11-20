@@ -429,6 +429,11 @@ function PotMove({ base, pot, inline, onChanged }: { base: string; pot: Pot; inl
   const asset = pot.kind === 'asset';
   const counted = pot.kind === 'currency';
   const owned = pot.units > 0;
+  // Деньги от продажи актива: во вклад в основной валюте (по умолчанию первый такой) или в свободные ('')
+  const cashPots = (useLoad<Pot[]>(asset ? `${base}/pots` : null).data ?? []).filter((p) => p.kind === 'cash');
+  const [dest, setDest] = useState<number | '' | null>(null);
+  const toPot = dest ?? cashPots[0]?.id ?? '';
+  const selling = asset && side === 'sell';
   const quote = useLoad<MarketPrice>(counted ? `${base}/market/price?date=${date}&currency=${pot.currency}` : null);
   const perUnit = quote.data ? quote.data.price * quote.data.rate : null;
   const derive = (from: 'sum' | 'units', text: string, per: number | null) => {
@@ -465,10 +470,12 @@ function PotMove({ base, pot, inline, onChanged }: { base: string; pot: Pot; inl
     if (count === null || (counted && count <= 0)) return setError(`Укажи, сколько ${symbol(pot.currency)}.`);
     const sign = side === 'buy' ? 1 : -1;
     try {
-      const res = await withRecalc((recalc) => api.post(`${base}/pots/${pot.id}/moves`, { date, amount: sign * value, units: sign * count, comment: '', recalc }));
+      const toPotId = selling && toPot ? toPot : null;
+      const res = await withRecalc((recalc) => api.post(`${base}/pots/${pot.id}/moves`, { date, amount: sign * value, units: sign * count, comment: '', toPotId, recalc }));
       if (res === null) return;
       setError(null);
-      setDone(`${side === 'buy' ? words.buy : words.sell}: ${money(value)}${counted ? ` (${amount(count)} ${symbol(pot.currency)})` : ''}. ${side === 'buy' ? 'Деньги взяты из свободных средств.' : 'Деньги вернулись в свободные средства.'}`);
+      const where = toPotId ? `Деньги во вкладе «${cashPots.find((p) => p.id === toPotId)?.name}».` : side === 'buy' ? 'Деньги взяты из свободных средств.' : 'Деньги вернулись в свободные средства.';
+      setDone(`${side === 'buy' ? words.buy : words.sell}: ${money(value)}${counted ? ` (${amount(count)} ${symbol(pot.currency)})` : ''}. ${where}`);
       setSum('');
       setUnits('');
       setManual({ sum: false, units: false });
@@ -484,7 +491,17 @@ function PotMove({ base, pot, inline, onChanged }: { base: string; pot: Pot; inl
         {error && <Banner kind="error">{error}</Banner>}
         {done && <Banner kind="ok">{done}</Banner>}
         {(!asset || owned) && <Segmented value={side} options={[['buy', words.buy], ['sell', words.sell]]} onChange={setSide} />}
-        {asset && side === 'sell' && <p className="muted small">Продажа отдаёт актив целиком.</p>}
+        {selling && <p className="muted small">Продажа отдаёт актив целиком.</p>}
+        {selling && cashPots.length > 0 && (
+          <label className="field">
+            <span>Куда деньги</span>
+            <select value={toPot} onChange={(e) => setDest(e.target.value ? Number(e.target.value) : '')}>
+              {cashPots.map((p) => <option key={p.id} value={p.id}>Во вклад «{p.name}»</option>)}
+              <option value="">В свободные средства</option>
+            </select>
+            <small className="muted">{toPot ? 'Расходы по активу с даты продажи (агентские, комиссии) будут забираться из этого вклада, свободные средства не изменятся.' : 'Деньги вернутся в свободные средства.'}</small>
+          </label>
+        )}
         {counted && (
           <p className="muted small">
             {perUnit
@@ -608,7 +625,11 @@ function Deals({ base, pot, moves, unit, isAdmin, onChanged }: {
   const [comment, setComment] = useState('');
   const [price, setPrice] = useState('');
   const [priceIn, setPriceIn] = useState<'stock' | 'base'>('stock');
+  const [toPot, setToPot] = useState<number | ''>('');
   const [error, setError] = useState<string | null>(null);
+  // Вклады в основной валюте: куда продажа актива кладёт деньги
+  const cashPots = (useLoad<Pot[]>(pot.kind === 'asset' ? `${base}/pots` : null).data ?? []).filter((p) => p.kind === 'cash');
+  const isSale = (m: PotQuotes['moves'][number]) => pot.kind === 'asset' && m.amount < 0;
   const counted = pot.kind === 'currency' || pot.kind === 'stock';
   const stock = pot.kind === 'stock';
   const foreign = symbol(pot.currency) !== symbol();
@@ -621,6 +642,7 @@ function Deals({ base, pot, moves, unit, isAdmin, onChanged }: {
     setComment(m.comment);
     setPrice(m.price !== null ? String(Math.round(m.price * 10000) / 10000).replace('.', ',') : '');
     setPriceIn('stock');
+    setToPot(m.toPotId ?? '');
     setError(null);
   }
 
@@ -636,7 +658,7 @@ function Deals({ base, pot, moves, unit, isAdmin, onChanged }: {
     // Знак сделки сохраняется: что было покупкой или переводом во вклад, тем и остаётся
     const sign = m.amount < 0 ? -1 : 1;
     try {
-      const body = { date, amount: sign * value, units: counted ? sign * Math.abs(units) : m.units, comment, ...(stock ? { price: each, priceIn } : {}) };
+      const body = { date, amount: sign * value, units: counted ? sign * Math.abs(units) : m.units, comment, ...(stock ? { price: each, priceIn } : {}), ...(isSale(m) ? { toPotId: toPot || null } : {}) };
       if ((await withRecalc((recalc) => api.put(`${base}/pots/${pot.id}/moves/${m.id}`, { ...body, recalc }))) === null) return;
       setEditing(null);
       await onChanged();
@@ -664,7 +686,11 @@ function Deals({ base, pot, moves, unit, isAdmin, onChanged }: {
           <>
             <div className="fund-top"><span className="entry-title">{dealTitle(pot, m)}</span><b>{money(Math.abs(m.amount))}</b></div>
             <div className="fund-bottom muted small">
-              <span>{shortDate(m.date)}{m.comment && ` · ${m.comment}`}</span>
+              <span>
+                {shortDate(m.date)}{m.comment && ` · ${m.comment}`}
+                {m.toPotId && ` · деньги во вклад «${cashPots.find((p) => p.id === m.toPotId)?.name ?? '…'}»`}
+                {m.linked && ' · по продаже актива'}
+              </span>
               {counted && m.units !== 0 && <span>{amount(Math.abs(m.units), 4)}{m.price !== null && ` по ${amount(m.price)} ${unit}`}</span>}
             </div>
           </>
@@ -705,6 +731,16 @@ function Deals({ base, pot, moves, unit, isAdmin, onChanged }: {
                     <input inputMode="decimal" value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />
                   </label>
                 )}
+                {isSale(m) && cashPots.length > 0 && (
+                  <label className="field">
+                    <span>Куда деньги</span>
+                    <select value={toPot} onChange={(e) => setToPot(e.target.value ? Number(e.target.value) : '')}>
+                      <option value="">В свободные средства</option>
+                      {cashPots.map((p) => <option key={p.id} value={p.id}>Во вклад «{p.name}»</option>)}
+                    </select>
+                    <small className="muted">Во вкладе: сумма продажи минус расходы по активу с даты продажи.</small>
+                  </label>
+                )}
                 <label className="field">
                   <span>Комментарий</span>
                   <input value={comment} onChange={(e) => setComment(e.target.value)} />
@@ -718,7 +754,8 @@ function Deals({ base, pot, moves, unit, isAdmin, onChanged }: {
             </li>
           );
         }
-        return <li key={m.id}>{isAdmin ? <button type="button" onClick={() => edit(m)}>{body}</button> : <div className="static">{body}</div>}</li>;
+        // Запись по продаже актива правится через продажу и расходы в карточке актива
+        return <li key={m.id}>{isAdmin && !m.linked ? <button type="button" onClick={() => edit(m)}>{body}</button> : <div className="static">{body}</div>}</li>;
       })}
     </ul>
   );

@@ -55,6 +55,8 @@ interface PotMoveState {
   units: number;
   comment: string;
   potId: number;
+  /** Вклад, куда продажа актива положила деньги; только если указан, чтобы старые записи журнала совпадали */
+  toPotId?: number;
   tags: string[];
 }
 
@@ -98,8 +100,14 @@ export function snapshot(db: Db, kind: ChangeKind, id: number): State | null {
     return row ? { ...row, tags: [] } : null;
   }
   if (kind === 'pot_move') {
-    const row = get<Omit<PotMoveState, 'tags'>>(db, 'SELECT date, amount, units, comment, pot_id potId FROM pot_moves WHERE id = ? AND inactive_at IS NULL', id);
-    return row ? { ...row, tags: [] } : null;
+    const row = get<Omit<PotMoveState, 'tags' | 'toPotId'> & { toPotId: number | null }>(
+      db,
+      'SELECT date, amount, units, comment, pot_id potId, to_pot_id toPotId FROM pot_moves WHERE id = ? AND inactive_at IS NULL',
+      id,
+    );
+    if (!row) return null;
+    const { toPotId, ...rest } = row;
+    return { ...rest, ...(toPotId ? { toPotId } : {}), tags: [] };
   }
   if (kind === 'asset_value') {
     const row = get<Omit<AssetValueState, 'tags'>>(db, 'SELECT date, value amount, comment, pot_id potId FROM asset_values WHERE id = ? AND inactive_at IS NULL', id);
@@ -174,7 +182,7 @@ function restore(db: Db, ledgerId: number, kind: ChangeKind, id: number, state: 
     run(db, 'UPDATE fund_transfers SET date = ?, amount = ?, comment = ?, from_fund_id = ?, to_fund_id = ?, inactive_at = NULL WHERE id = ?', s.date, s.amount, s.comment, s.fromFundId, s.toFundId, id);
   } else if (kind === 'pot_move') {
     const s = state as PotMoveState;
-    run(db, 'UPDATE pot_moves SET date = ?, amount = ?, units = ?, comment = ?, inactive_at = NULL WHERE id = ?', s.date, s.amount, s.units, s.comment, id);
+    run(db, 'UPDATE pot_moves SET date = ?, amount = ?, units = ?, comment = ?, to_pot_id = ?, inactive_at = NULL WHERE id = ?', s.date, s.amount, s.units, s.comment, s.toPotId ?? null, id);
   } else if (kind === 'asset_value') {
     const s = state as AssetValueState;
     run(db, 'UPDATE asset_values SET date = ?, value = ?, comment = ?, inactive_at = NULL WHERE id = ?', s.date, s.amount, s.comment, id);

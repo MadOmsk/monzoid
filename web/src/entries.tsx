@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { RemindersBlock, type Reminder } from './reminders';
-import { api, confirmAction, useLoad, withRecalc, type Entry, type Fund, type Member, type Pot, type Refundable, type Tag } from './api';
+import { api, confirmAction, useLoad, withRecalc, type Entry, type Fund, type Member, type Pot, type PotQuotes, type Refundable, type Tag } from './api';
 import { leaveForm, useBack, useUnsaved } from './back';
 import { numberInput, dayMonth, defaultDate, fundLabel, memberLabel, money, parseMoney, monthShort, shiftYm, signed, symbol } from './format';
 import { TagPicker } from './tags';
@@ -513,6 +513,10 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
   // Активы для сопутствующих расходов; проданные тоже, чтобы видеть старые привязки
   const { data: pots } = useLoad<Pot[]>(`${base}/pots`);
   const assets = (pots ?? []).filter((p) => p.kind === 'asset');
+  // Продажа актива с деньгами во вклад: расход с её даты (до новой покупки) забирается из этого вклада
+  const assetDeals = useLoad<PotQuotes>(fund === ASSET && pot ? `${base}/pots/${pot}/quotes` : null).data?.moves ?? [];
+  const sale = [...assetDeals].reverse().find((m) => m.amount < 0 && m.date <= date);
+  const proceedsPot = sale?.toPotId && !assetDeals.some((m) => m.amount > 0 && m.date > sale.date && m.date <= date) ? pots?.find((p) => p.id === sale.toPotId) : undefined;
   const [earnedBy, setEarnedBy] = useState<number | ''>(entry ? (entry.earnedBy ?? '') : userId);
   const { data: allTags } = useLoad<Tag[]>(`${base}/tags`);
   const [tags, setTags] = useState<string[]>(entry?.tags ?? []);
@@ -629,12 +633,19 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
         </div>
       )}
       {kind !== 'income' && fund === ASSET && (
-        <Field label="Актив" hint="Расход по активу: агентские, нотариус, регистрация. Идёт не из фонда, а прямо из свободных; на стоимость актива не влияет, виден на экране актива.">
+        <Field label="Актив" hint="Расход по активу: агентские, нотариус, регистрация. Идёт не из фонда, а прямо из свободных; на стоимость актива не влияет, виден на экране актива. Если актив продан с деньгами во вклад, расходы с даты продажи забираются из этого вклада.">
           <select value={pot} onChange={(e) => setPot(e.target.value ? Number(e.target.value) : '')}>
             <option value="">Выбери актив</option>
             {assets.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
           </select>
         </Field>
+      )}
+      {kind !== 'income' && fund === ASSET && proceedsPot && sale && (
+        <Banner kind="warn">
+          {kind === 'refund'
+            ? `Актив продан ${dayMonth(sale.date)} с деньгами во вклад «${proceedsPot.name}»: возврат вернётся в этот вклад.`
+            : `Актив продан ${dayMonth(sale.date)} с деньгами во вклад «${proceedsPot.name}»: этот расход уменьшит сумму в нём, свободные средства не изменятся.`}
+        </Banner>
       )}
       <Field label="Дата"><DateInput value={date} onChange={setDate} /></Field>
       </fieldset>

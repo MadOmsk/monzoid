@@ -392,7 +392,7 @@ export interface PotQuotes {
   currency: string;
   points: { date: string; price: number }[];
   /** Покупки и продажи; цена единицы в той же валюте, null без количества или курса */
-  moves: { id: number; date: string; amount: number; units: number; comment: string; price: number | null }[];
+  moves: { id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: boolean; price: number | null }[];
 }
 
 /** Дневные цены акции, раз в сутки на тикер. */
@@ -440,9 +440,10 @@ export async function potQuotes(db: Db, source: MarketSource, potId: number, tod
     });
   }
   const moves: PotQuotes['moves'] = [];
-  for (const move of all<{ id: number; date: string; amount: number; units: number; comment: string }>(
+  // toPotId: продажа актива положила деньги в этот вклад; linked: запись следует за продажей и руками не правится
+  for (const move of all<{ id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: number }>(
     db,
-    'SELECT id, date, amount, units, comment FROM pot_moves WHERE pot_id = ? AND inactive_at IS NULL ORDER BY date, id',
+    'SELECT id, date, amount, units, comment, to_pot_id toPotId, sale_move_id IS NOT NULL linked FROM pot_moves WHERE pot_id = ? AND inactive_at IS NULL ORDER BY date, id',
     potId,
   )) {
     let price: number | null = null;
@@ -450,7 +451,7 @@ export async function potQuotes(db: Db, source: MarketSource, potId: number, tod
       const fx = currency === pot.base ? 1 : (await ensureRatesOn(db, source, move.date)) ? rateOn(db, currency, pot.base, move.date) : null;
       if (fx) price = move.amount / 100 / move.units / fx;
     }
-    moves.push({ ...move, price });
+    moves.push({ ...move, linked: !!move.linked, price });
   }
   return { currency, points, moves };
 }
