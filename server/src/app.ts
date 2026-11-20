@@ -44,7 +44,7 @@ const DEFAULT_FUNDS = [
 const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
 // Цветовые схемы и дизайны базы, оформление задаёт клиент. Пустая строка: цвета Telegram и обычный дизайн
 const THEMES = ['', 'forest', 'ocean', 'sand', 'lavender', 'graphite', 'midnight', 'sakura', 'mint', 'sunset', 'paper', 'unlocked', 'peach', 'sky', 'coffee', 'aurora'] as const;
-const DESIGNS = ['', 'unlocked', 'mono', 'journal', 'soft', 'compact'] as const;
+const DESIGNS = ['', 'unlocked', 'mono', 'journal', 'soft', 'compact', 'bank'] as const;
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 
 const Ym = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);

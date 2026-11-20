@@ -56,6 +56,7 @@ export const DESIGNS: [string, string, string][] = [
   ['journal', 'Журнал', 'Шрифт с засечками, тонкие линии, без заливки'],
   ['soft', 'Мягкий', 'Nunito, крупные скругления, мягкие тени без рамок'],
   ['compact', 'Плотный', 'Inter, мелкий шрифт и узкие отступы: больше видно сразу'],
+  ['bank', 'Банк', 'Manrope, баланс картой, операции списком, как в банковском приложении'],
 ];
 
 // Шрифт дизайна грузится, только когда дизайн выбран или показан в настройках
@@ -65,6 +66,7 @@ const FONTS: Record<string, string> = {
   journal: 'https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400..800&display=swap',
   soft: 'https://fonts.googleapis.com/css2?family=Nunito:wght@400..800&display=swap',
   compact: 'https://fonts.googleapis.com/css2?family=Inter:wght@400..700&display=swap',
+  bank: 'https://fonts.googleapis.com/css2?family=Manrope:wght@400..800&display=swap',
 };
 
 export function loadDesignFont(design: string) {

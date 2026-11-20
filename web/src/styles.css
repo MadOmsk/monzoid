@@ -158,6 +158,9 @@ input.check { width: 20px; height: 20px; padding: 0; margin: 0; accent-color: va
 .tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
 .tabs button { flex: 1 1 auto; min-width: 0; text-align: center; padding: 13px 2px; font-size: 13px; color: var(--muted); white-space: nowrap; }
 .tabs button.active { color: var(--link); font-weight: 600; }
+/* Сделка с валютой: сумма, курс, количество; посчитанное поле приглушено */
+.fx-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.fx-fields input.auto { color: var(--muted); }
 /* «Сохранено · Отменить» над кнопками внизу */
 .undo-toast { position: fixed; z-index: 20; left: max(12px, calc(50vw - 308px)); right: max(12px, calc(50vw - 308px)); bottom: calc(132px + env(safe-area-inset-bottom)); display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 12px; background: var(--text); color: var(--bg); font-size: 14px; box-shadow: 0 6px 18px rgba(0, 0, 0, .3); }
 .undo-toast button { color: var(--bg); font-weight: 700; white-space: nowrap; }
@@ -479,6 +482,55 @@ tbody th { font-weight: 500; }
 :root[data-design='compact'] .fab.fab-third { right: calc(max(16px, calc(50vw - 304px)) + 112px); font-size: 20px; }
 :root[data-design='compact'] th, :root[data-design='compact'] td { padding: 6px 6px; }
 .theme-option[data-design='compact'] { border-radius: 6px; font-family: 'Inter', system-ui, sans-serif; }
+
+/* Дизайн «Банк»: Manrope, главный баланс цветной картой, списки операций одним блоком с разделителями,
+   заголовки разделов мелким капсом, нижняя панель с отметкой активной вкладки. С любой цветовой схемой */
+[data-design='bank'] { font-family: 'Manrope', system-ui, -apple-system, sans-serif; --b-shadow: 0 1px 2px color-mix(in srgb, var(--text) 6%, transparent), 0 4px 16px color-mix(in srgb, var(--text) 6%, transparent); --b-field: color-mix(in srgb, var(--muted) 10%, var(--card)); --b-tonal: color-mix(in srgb, var(--accent) 14%, var(--card)); }
+:root[data-design='bank'] body { font-family: 'Manrope', system-ui, -apple-system, sans-serif; font-variant-numeric: tabular-nums; }
+:root[data-design='bank'] h1 { font-size: 26px; font-weight: 800; letter-spacing: -.02em; }
+:root[data-design='bank'] h2 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 20px 4px 8px; }
+:root[data-design='bank'] .tile, :root[data-design='bank'] .facts, :root[data-design='bank'] .section, :root[data-design='bank'] .section-link, :root[data-design='bank'] .check-row, :root[data-design='bank'] .chart, :root[data-design='bank'] .table-wrap { border-radius: 20px; border-color: transparent; box-shadow: var(--b-shadow); }
+:root[data-design='bank'] .tile { padding: 14px 16px; }
+:root[data-design='bank'] .tile strong { font-weight: 800; letter-spacing: -.01em; }
+:root[data-design='bank'] .facts { padding: 4px 16px; }
+:root[data-design='bank'] .facts dd { font-weight: 700; }
+/* Главная сумма экрана: карта в цвет схемы */
+:root[data-design='bank'] .tile.hero, :root[data-design='bank'] .tiles > .tile.full:first-child { padding: 20px 20px 18px; border-radius: 24px; color: var(--accent-text); background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #000)); box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 35%, transparent); }
+:root[data-design='bank'] .tile.hero > span, :root[data-design='bank'] .tile.hero small, :root[data-design='bank'] .tiles > .tile.full:first-child > span, :root[data-design='bank'] .tiles > .tile.full:first-child small { color: inherit; opacity: .8; }
+:root[data-design='bank'] .tile.hero strong, :root[data-design='bank'] .tiles > .tile.full:first-child strong { font-size: 32px; }
+:root[data-design='bank'] .tile.hero .positive, :root[data-design='bank'] .tile.hero .negative, :root[data-design='bank'] .tiles > .tile.full:first-child .positive, :root[data-design='bank'] .tiles > .tile.full:first-child .negative { color: inherit; font-weight: 700; }
+/* Списки: один блок, строки через тонкую линию */
+:root[data-design='bank'] .entry-list, :root[data-design='bank'] .fund-list, :root[data-design='bank'] .tag-rank { gap: 0; background: var(--card); border-radius: 20px; overflow: hidden; box-shadow: var(--b-shadow); }
+:root[data-design='bank'] .entry-list li > button, :root[data-design='bank'] .entry-list .static, :root[data-design='bank'] .fund-list li > button, :root[data-design='bank'] .tag-rank li > button { border-radius: 0; background: transparent; padding: 13px 16px; box-shadow: none; }
+:root[data-design='bank'] .entry-list li + li, :root[data-design='bank'] .fund-list li + li, :root[data-design='bank'] .tag-rank li + li { border-top: 1px solid var(--line); }
+:root[data-design='bank'] .entry-title { font-weight: 600; }
+:root[data-design='bank'] .entry-main b, :root[data-design='bank'] .fund-top b { font-weight: 800; }
+:root[data-design='bank'] .rank-row, :root[data-design='bank'] .review-card { border-radius: 20px; box-shadow: var(--b-shadow); }
+:root[data-design='bank'] input, :root[data-design='bank'] select, :root[data-design='bank'] .fund-current { border-radius: 14px; border-color: transparent; background: var(--b-field); }
+:root[data-design='bank'] .btn { border-radius: 16px; border-color: transparent; background: var(--b-tonal); color: var(--link); font-weight: 700; padding: 14px 16px; }
+:root[data-design='bank'] .btn.primary { background: var(--accent); color: var(--accent-text); }
+:root[data-design='bank'] .btn.danger { background: color-mix(in srgb, var(--danger) 12%, var(--card)); color: var(--danger); }
+:root[data-design='bank'] .btn.small { border-radius: 12px; padding: 9px 14px; }
+:root[data-design='bank'] .section summary, :root[data-design='bank'] .section-link { padding: 15px 16px; font-weight: 700; }
+:root[data-design='bank'] .segmented { border-radius: 14px; padding: 3px; }
+:root[data-design='bank'] .segmented button { border-radius: 11px; }
+:root[data-design='bank'] .segmented button.active { font-weight: 700; }
+:root[data-design='bank'] .chip { border-radius: 10px; }
+:root[data-design='bank'] .fund-tiles button { border-radius: 14px; border-color: transparent; background: var(--b-field); }
+:root[data-design='bank'] .banner { border-radius: 16px; border-left-width: 0; box-shadow: var(--b-shadow); }
+:root[data-design='bank'] .banner.error { background: color-mix(in srgb, var(--danger) 12%, var(--card)); }
+:root[data-design='bank'] .banner.warn { background: color-mix(in srgb, #eda100 14%, var(--card)); }
+:root[data-design='bank'] .banner.ok { background: color-mix(in srgb, var(--positive) 12%, var(--card)); }
+:root[data-design='bank'] .bar, :root[data-design='bank'] .bar i { border-radius: 999px; }
+:root[data-design='bank'] .fab { border-radius: 18px; box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 40%, transparent); }
+:root[data-design='bank'] .fab.fab-settle, :root[data-design='bank'] .fab.fab-third { box-shadow: var(--b-shadow); }
+/* Нижняя панель: активная вкладка цветом схемы с полоской сверху */
+:root[data-design='bank'] .tabs { border-top: 0; box-shadow: 0 -1px 0 var(--line), 0 -6px 20px color-mix(in srgb, var(--text) 5%, transparent); }
+:root[data-design='bank'] .tabs button { position: relative; padding: 14px 2px 12px; font-size: 12px; font-weight: 600; }
+:root[data-design='bank'] .tabs button.active { color: var(--accent); font-weight: 800; }
+:root[data-design='bank'] .tabs button.active::before { content: ''; position: absolute; top: 0; left: 50%; width: 28px; height: 3px; margin-left: -14px; border-radius: 0 0 3px 3px; background: var(--accent); }
+:root[data-design='bank'] .undo-toast { border-radius: 16px; }
+.theme-option[data-design='bank'] { border-radius: 20px; font-family: 'Manrope', system-ui, sans-serif; }
 
 /* Архивация фонда: подпись у архивного фонда и список операций для разнесения */
 .fund-archive-note { grid-column: 1 / -1; }
