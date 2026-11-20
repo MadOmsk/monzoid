@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, ApiError, confirmAction, useLoad, withRecalc, type AssetValue, type Entry, type MarketPrice, type MonthReport, type Pot, type PotQuotes } from './api';
 import { confirmLeave, useBack } from './back';
 import { EntryForm } from './entries';
+import { FxFields, useFx } from './fx';
 import { numberInput, amount, dayMonth, fundLabel, moneyRounded as money, monthShort, niceTicks, shiftYm, parseMoney, parseUnits, signedRounded as signed, symbol, today, toGroupedInput, toInput, tone } from './format';
 import { Banner, Button, DateInput, Header, Segmented, Spinner, useRemembered } from './ui';
 
@@ -432,12 +433,9 @@ function decimalInput(value: number, digits: number): string {
 function PotMove({ base, pot, inline, onChanged }: { base: string; pot: Pot; inline?: boolean; onChanged: () => Promise<void> }) {
   const [side, setSide] = useState<'buy' | 'sell'>('buy');
   const [sum, setSum] = useState('');
-  const [units, setUnits] = useState('');
   const [date, setDate] = useState(today());
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
-  // Какие поля человек ввёл сам; второе считается по курсу на дату, пока его не поправили руками
-  const [manual, setManual] = useState({ sum: false, units: false });
   const asset = pot.kind === 'asset';
   const counted = pot.kind === 'currency';
   const owned = pot.units > 0;
@@ -448,37 +446,16 @@ function PotMove({ base, pot, inline, onChanged }: { base: string; pot: Pot; inl
   const selling = asset && side === 'sell';
   const quote = useLoad<MarketPrice>(counted ? `${base}/market/price?date=${date}&currency=${pot.currency}` : null);
   const perUnit = quote.data ? quote.data.price * quote.data.rate : null;
-  const derive = (from: 'sum' | 'units', text: string, per: number | null) => {
-    if (!per) return;
-    if (from === 'sum') {
-      const value = parseMoney(text);
-      setUnits(value && value > 0 ? decimalInput(value / 100 / per, 2) : '');
-    } else {
-      const count = parseUnits(text);
-      setSum(count && count > 0 ? toGroupedInput(Math.round(count * per * 100)) : '');
-    }
-  };
-  const type = (field: 'sum' | 'units', text: string) => {
-    if (field === 'sum') setSum(text);
-    else setUnits(text);
-    const other = field === 'sum' ? 'units' : 'sum';
-    const next = { ...manual, [field]: text.trim() !== '' };
-    setManual(next);
-    if (!manual[other]) derive(field, text, perUnit);
-  };
-  // Новая дата или пришёл курс: пересчитать то, что не вводили руками
-  useEffect(() => {
-    if (manual.sum && !manual.units) derive('sum', sum, perUnit);
-    if (manual.units && !manual.sum) derive('units', units, perUnit);
-  }, [perUnit]);
+  // Валюта: сумма, курс и количество, два из трёх задаются, третье считается
+  const fx = useFx(perUnit);
   const words = asset
     ? { buy: owned ? 'Вложение' : 'Покупка', sell: 'Продажа' }
     : pot.kind === 'cash' ? { buy: 'Положить', sell: 'Забрать' } : { buy: 'Купить', sell: 'Продать' };
 
   async function save() {
-    const value = parseMoney(sum);
+    const value = counted ? fx.sum : parseMoney(sum);
     if (!value || value <= 0) return setError(`Укажи сумму в ${symbol()}.`);
-    const count = counted ? parseUnits(units) : 0;
+    const count = counted ? fx.units : 0;
     if (count === null || (counted && count <= 0)) return setError(`Укажи, сколько ${symbol(pot.currency)}.`);
     const sign = side === 'buy' ? 1 : -1;
     try {
@@ -489,8 +466,7 @@ function PotMove({ base, pot, inline, onChanged }: { base: string; pot: Pot; inl
       const where = toPotId ? `Деньги во вкладе «${cashPots.find((p) => p.id === toPotId)?.name}».` : side === 'buy' ? 'Деньги взяты из свободных средств.' : 'Деньги вернулись в свободные средства.';
       setDone(`${side === 'buy' ? words.buy : words.sell}: ${money(value)}${counted ? ` (${amount(count)} ${symbol(pot.currency)})` : ''}. ${where}`);
       setSum('');
-      setUnits('');
-      setManual({ sum: false, units: false });
+      fx.reset();
       await onChanged();
     } catch (e) {
       setDone(null);
@@ -515,15 +491,17 @@ function PotMove({ base, pot, inline, onChanged }: { base: string; pot: Pot; inl
           </label>
         )}
         {counted && (
-          <p className="muted small">
-            {perUnit
-              ? `Курс на ${dayMonth(date)}: 1 ${symbol(pot.currency)} = ${amount(perUnit)} ${symbol()}${quote.data!.rateOnDate ? '' : ' (последний известный)'}. Введи одно поле, второе посчитается; его можно поправить.`
-              : quote.error ? 'Курс не загрузился: введи оба поля.' : 'Загружаю курс…'}
-          </p>
+          <>
+            <p className="muted small">
+              {perUnit
+                ? `Нацбанк на ${dayMonth(date)}: 1 ${symbol(pot.currency)} = ${amount(perUnit)} ${symbol()}${quote.data!.rateOnDate ? '' : ' (последний известный)'}. Заполни любые два поля, третье посчитается; его можно поправить.`
+                : quote.error ? 'Курс Нацбанка не загрузился: заполни любые два поля.' : 'Загружаю курс…'}
+            </p>
+            <FxFields fx={fx} currency={pot.currency} unitsLabel={side === 'buy' ? 'Получено' : 'Продано'} />
+          </>
         )}
         <div className="inline-form wrap">
-          <input aria-label={`Сумма, ${symbol()}`} inputMode="decimal" placeholder={`Сумма, ${symbol()}`} value={sum} onChange={(e) => type('sum', numberInput(e.target.value))} />
-          {counted && <input aria-label={`Сколько, ${symbol(pot.currency)}`} inputMode="decimal" placeholder={`Сколько, ${symbol(pot.currency)}`} value={units} onChange={(e) => type('units', numberInput(e.target.value, { decimals: 8 }))} />}
+          {!counted && <input aria-label={`Сумма, ${symbol()}`} inputMode="decimal" placeholder={`Сумма, ${symbol()}`} value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />}
           <DateInput label="Дата" value={date} onChange={setDate} />
           <Button small onClick={save}>{side === 'buy' ? words.buy : words.sell}</Button>
         </div>
@@ -954,12 +932,6 @@ function StockTrade({ base, pots, fixed, inline, onChanged }: { base: string; po
   );
 }
 
-/** Количество валюты для поля ввода по сумме в основной валюте и курсу; без курса пусто. */
-function unitsFor(sum: string, perUnit: number | null): number | null {
-  const value = parseMoney(sum);
-  return value && value > 0 && perUnit ? Math.round((value / 100 / perUnit) * 100) / 100 : null;
-}
-
 /**
  * Перевод между вкладами в основной валюте и валютой: вывод из одного и вложение в другой одной парой сделок.
  * Свободные средства не меняются. Количество валюты по умолчанию считается по курсу Нацбанка на дату.
@@ -969,26 +941,29 @@ function PotTransfer({ base, pots, onChanged }: { base: string; pots: Pot[]; onC
   const [from, setFrom] = useState<number | ''>(movable.find((p) => p.kind === 'cash')?.id ?? '');
   const [to, setTo] = useState<number | ''>('');
   const [sum, setSum] = useState('');
-  const [fromUnits, setFromUnits] = useState('');
-  const [toUnits, setToUnits] = useState('');
   const [date, setDate] = useState(today());
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const src = movable.find((p) => p.id === from);
   const dst = movable.find((p) => p.id === to);
-  const rate = (pot?: Pot) => useLoad<MarketPrice>(pot?.kind === 'currency' ? `${base}/market/price?date=${date}&currency=${pot.currency}` : null).data;
+  const rate = (pot?: Pot) => {
+    const data = useLoad<MarketPrice>(pot?.kind === 'currency' ? `${base}/market/price?date=${date}&currency=${pot.currency}` : null).data;
+    return data ? data.price * data.rate : null;
+  };
   const srcRate = rate(src);
   const dstRate = rate(dst);
+  // Сумма в основной валюте живёт в поле валюты: из валюты списания, а если та в тенге, то из валюты получения
+  const srcFx = useFx(srcRate);
+  const dstFx = useFx(dstRate, src?.kind === 'currency' ? srcFx.sum : undefined);
   if (movable.length < 2) return null;
-  const autoFrom = unitsFor(sum, srcRate ? srcRate.price * srcRate.rate : null);
-  const autoTo = unitsFor(sum, dstRate ? dstRate.price * dstRate.rate : null);
+  const sumFx = src?.kind === 'currency' ? srcFx : dst?.kind === 'currency' ? dstFx : null;
 
   async function save() {
     if (!src || !dst) return setError('Выбери, откуда и куда.');
-    const value = parseMoney(sum);
+    const value = sumFx ? sumFx.sum : parseMoney(sum);
     if (!value || value <= 0) return setError(`Укажи сумму в ${symbol()}.`);
-    const outUnits = src.kind === 'currency' ? (fromUnits.trim() ? parseUnits(fromUnits) : autoFrom) : 0;
-    const inUnits = dst.kind === 'currency' ? (toUnits.trim() ? parseUnits(toUnits) : autoTo) : 0;
+    const outUnits = src.kind === 'currency' ? srcFx.units : 0;
+    const inUnits = dst.kind === 'currency' ? dstFx.units : 0;
     if (src.kind === 'currency' && !outUnits) return setError(`Укажи, сколько ${symbol(src.currency)} списать.`);
     if (dst.kind === 'currency' && !inUnits) return setError(`Укажи, сколько ${symbol(dst.currency)} получено.`);
     try {
@@ -997,8 +972,8 @@ function PotTransfer({ base, pots, onChanged }: { base: string; pots: Pot[]; onC
       setError(null);
       setDone(`Переведено ${money(value)}: «${src.name}» → «${dst.name}». Свободные средства не изменились.`);
       setSum('');
-      setFromUnits('');
-      setToUnits('');
+      srcFx.reset();
+      dstFx.reset();
       await onChanged();
     } catch (e) {
       setDone(null);
@@ -1018,13 +993,15 @@ function PotTransfer({ base, pots, onChanged }: { base: string; pots: Pot[]; onC
       <div className="section-body">
         {error && <Banner kind="error">{error}</Banner>}
         {done && <Banner kind="ok">{done}</Banner>}
-        <p className="muted small">Деньги уходят из одного вклада и сразу приходят в другой: ни в доходы и расходы, ни в свободные средства перевод не попадает. Для валюты количество считается по курсу Нацбанка на дату, его можно поправить.</p>
+        <p className="muted small">Деньги уходят из одного вклада и сразу приходят в другой: ни в доходы и расходы, ни в свободные средства перевод не попадает. У валюты заполни любые два поля из суммы, курса и количества, третье посчитается по ним; курс по умолчанию Нацбанка на дату.</p>
         <div className="inline-form wrap">
           {choose('Откуда', from, setFrom, to)}
           {choose('Куда', to, setTo, from)}
-          <input aria-label={`Сумма, ${symbol()}`} inputMode="decimal" placeholder={`Сумма, ${symbol()}`} value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />
-          {src?.kind === 'currency' && <input aria-label={`Списать, ${symbol(src.currency)}`} inputMode="decimal" placeholder={`Списать, ${symbol(src.currency)}${autoFrom ? ` ≈ ${amount(autoFrom)}` : ''}`} value={fromUnits} onChange={(e) => setFromUnits(numberInput(e.target.value, { decimals: 8 }))} />}
-          {dst?.kind === 'currency' && <input aria-label={`Получено, ${symbol(dst.currency)}`} inputMode="decimal" placeholder={`Получено, ${symbol(dst.currency)}${autoTo ? ` ≈ ${amount(autoTo)}` : ''}`} value={toUnits} onChange={(e) => setToUnits(numberInput(e.target.value, { decimals: 8 }))} />}
+        </div>
+        {src?.kind === 'currency' && <FxFields fx={srcFx} currency={src.currency} unitsLabel="Списано" />}
+        {dst?.kind === 'currency' && <FxFields fx={dstFx} currency={dst.currency} unitsLabel="Получено" showSum={src?.kind !== 'currency'} />}
+        <div className="inline-form wrap">
+          {!sumFx && <input aria-label={`Сумма, ${symbol()}`} inputMode="decimal" placeholder={`Сумма, ${symbol()}`} value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />}
           <DateInput label="Дата" value={date} onChange={setDate} />
           <Button small onClick={save}>Перевести</Button>
         </div>
