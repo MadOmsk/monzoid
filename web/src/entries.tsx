@@ -497,18 +497,19 @@ type Kind = 'expense' | 'refund' | 'income';
 /** Псевдофонд «Актив» в выборе фонда */
 const ASSET = -1;
 
-export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, reminder, onClose }: { base: string; ym: string; userId: number; isAdmin: boolean; entry?: Entry; fundId: number | null; income?: boolean; reminder?: Reminder; onClose: () => void }) {
+/** potId: новый расход сразу по этому активу (открыт из карточки актива) */
+export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, reminder, potId, onClose }: { base: string; ym: string; userId: number; isAdmin: boolean; entry?: Entry; fundId: number | null; income?: boolean; reminder?: Reminder; potId?: number; onClose: () => void }) {
   const { data: funds } = useLoad<Fund[]>(`${base}/funds`);
   const { data: members } = useLoad<Member[]>(isAdmin ? `${base}/members` : null);
   const initialKind: Kind = entry ? (entry.kind === 'income' ? 'income' : entry.amount < 0 ? 'refund' : 'expense') : income ? 'income' : 'expense';
   const [kind, setKind] = useState<Kind>(initialKind);
   const [amount, setAmount] = useState(entry ? String(Math.abs(entry.amount) / 100) : reminder?.amount ? String(reminder.amount / 100) : '');
   // ASSET: расход по активу без фонда (агентские, нотариус), списывается прямо из свободных
-  const [fund, setFund] = useState<number | ''>(entry ? (entry.fundId ?? (entry.potId ? ASSET : '')) : (reminder?.fundId ?? fundId ?? ''));
+  const [fund, setFund] = useState<number | ''>(entry ? (entry.fundId ?? (entry.potId ? ASSET : '')) : potId ? ASSET : (reminder?.fundId ?? fundId ?? ''));
   const [date, setDate] = useState(entry?.date ?? reminder?.dueDate ?? defaultDate(ym));
   const [comment, setComment] = useState(entry?.comment ?? reminder?.comment ?? '');
   const [paidBy, setPaidBy] = useState<number | ''>(entry?.paidBy ?? '');
-  const [pot, setPot] = useState<number | ''>(entry?.potId ?? '');
+  const [pot, setPot] = useState<number | ''>(entry?.potId ?? potId ?? '');
   // Активы для сопутствующих расходов; проданные тоже, чтобы видеть старые привязки
   const { data: pots } = useLoad<Pot[]>(`${base}/pots`);
   const assets = (pots ?? []).filter((p) => p.kind === 'asset');

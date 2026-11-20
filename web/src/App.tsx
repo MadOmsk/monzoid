@@ -233,7 +233,7 @@ function LedgerApp({ ledger, me, inviteError, onSwitch, onChanged }: { ledger: L
           <EntriesScreen key={version} base={base} ym={ym} onYm={setYm} period={entryPeriod} onPeriod={setEntryPeriod} kind={entryKind} onKind={setEntryKind} startYm={ledger.startYm} currentYm={me.currentYm} userId={me.user.id} isAdmin={isAdmin} locked={ledger.locked} fundId={fundFilter} onFund={setFundFilter} onSelecting={setSelecting} onEdit={(entry) => setOverlay({ type: 'edit', entry })} onReminder={(reminder) => setOverlay({ type: 'reminder', reminder })} onConfirm={(reminder) => setOverlay({ type: 'add', reminder })} />
         )}
         {tab === 'history' && <HistoryScreen key={version} base={base} startYm={ledger.startYm} currentYm={me.currentYm} isAdmin={isAdmin} currency={ledger.currency} />}
-        {tab === 'pots' && <PotsScreen key={`pots${version}`} base={base} isAdmin={isAdmin} currency={ledger.currency} currentYm={me.currentYm} />}
+        {tab === 'pots' && <PotsScreen key={`pots${version}`} base={base} isAdmin={isAdmin} userId={me.user.id} currency={ledger.currency} currentYm={me.currentYm} />}
         {tab === 'base' && <MoreScreen key={`base${version}`} section="base" base={base} ledger={ledger} me={me} onSwitch={onSwitch} onChanged={onChanged} />}
         {tab === 'more' && <MoreScreen key={version} section="app" base={base} ledger={ledger} me={me} onSwitch={onSwitch} onChanged={onChanged} />}
       </div>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, confirmAction, useLoad, withRecalc, type AssetValue, type MarketPrice, type MonthReport, type Pot, type PotQuotes } from './api';
-import { useBack } from './back';
+import { confirmLeave, useBack } from './back';
+import { EntryForm } from './entries';
 import { numberInput, amount, dayMonth, fundLabel, moneyRounded as money, monthShort, niceTicks, shiftYm, parseMoney, parseUnits, signedRounded as signed, symbol, today, toGroupedInput, toInput, tone } from './format';
 import { Banner, Button, DateInput, Header, Segmented, Spinner, useRemembered } from './ui';
 
@@ -76,20 +77,20 @@ function dayLabel(date: string): string {
 }
 
 /** Вкладка «Вклады» в нижней панели. Доход за месяцы считается по закрытым месяцам, как в статистике. */
-export function PotsScreen({ base, isAdmin, currency, currentYm }: { base: string; isAdmin: boolean; currency: string; currentYm: string }) {
+export function PotsScreen({ base, isAdmin, userId, currency, currentYm }: { base: string; isAdmin: boolean; userId: number; currency: string; currentYm: string }) {
   const { data, error } = useLoad<{ months: MonthReport[] }>(`${base}/history`);
   if (error) return <Banner kind="error">{error}</Banner>;
   if (!data) return <Spinner />;
   return (
     <>
       <h1>Вклады и активы</h1>
-      <PotsView base={base} isAdmin={isAdmin} currency={currency} months={data.months.filter((m) => m.closed)} currentYm={currentYm} />
+      <PotsView base={base} isAdmin={isAdmin} userId={userId} currency={currency} months={data.months.filter((m) => m.closed)} currentYm={currentYm} />
     </>
   );
 }
 
 /** Вклады: доходность всего, по группам и по каждому вкладу. */
-function PotsView({ base, isAdmin, currency, months = [], currentYm }: { base: string; isAdmin: boolean; currency: string; months?: MonthReport[]; currentYm?: string }) {
+function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: { base: string; isAdmin: boolean; userId: number; currency: string; months?: MonthReport[]; currentYm?: string }) {
   const { data, error, reload } = useLoad<Pot[]>(`${base}/pots`);
   const [openId, setOpenId] = useState<number | null>(null);
   const [showSold, setShowSold] = useState(false);
@@ -99,7 +100,7 @@ function PotsView({ base, isAdmin, currency, months = [], currentYm }: { base: s
   if (error) return <Banner kind="error">{error}</Banner>;
   if (!data) return <Spinner />;
   const open = data.find((p) => p.id === openId);
-  if (open?.kind === 'asset') return <AssetDetail base={base} pot={open} isAdmin={isAdmin} onChanged={reload} onBack={() => setOpenId(null)} />;
+  if (open?.kind === 'asset') return <AssetDetail base={base} pot={open} isAdmin={isAdmin} userId={userId} ym={currentYm ?? today().slice(0, 7)} onChanged={reload} onBack={() => setOpenId(null)} />;
   if (open) return <PotDetail base={base} pot={open} isAdmin={isAdmin} onChanged={reload} onBack={() => setOpenId(null)} />;
 
   // Администратору видны все вкладки: на пустой можно завести первый вклад этого вида
@@ -271,7 +272,7 @@ interface AssetExpense {
 }
 
 /** Актив: стоимость по последней оценке, история оценок, сопутствующие расходы и сделки. */
-function AssetDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; pot: Pot; isAdmin: boolean; onChanged: () => Promise<void>; onBack: () => void }) {
+function AssetDetail({ base, pot, isAdmin, userId, ym, onChanged, onBack }: { base: string; pot: Pot; isAdmin: boolean; userId: number; ym: string; onChanged: () => Promise<void>; onBack: () => void }) {
   const values = useLoad<AssetValue[]>(`${base}/pots/${pot.id}/values`);
   const deals = useLoad<PotQuotes>(`${base}/pots/${pot.id}/quotes`);
   const expenses = useLoad<AssetExpense[]>(`${base}/pots/${pot.id}/expenses`);
@@ -282,6 +283,9 @@ function AssetDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; 
   const [comment, setComment] = useState('');
   const [error, setError] = useState<string | null>(null);
   const owned = pot.units > 0;
+  // Форма расхода по этому активу открывается поверх карточки
+  const [adding, setAdding] = useState(false);
+  useBack(adding, 3, async () => { if (await confirmLeave()) setAdding(false); });
 
   async function changed() {
     setError(null);
@@ -311,6 +315,14 @@ function AssetDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; 
     }
   }
 
+  if (adding) {
+    const close = async () => {
+      setAdding(false);
+      await Promise.all([expenses.reload(), onChanged()]);
+    };
+    return <EntryForm base={base} ym={ym} userId={userId} isAdmin={isAdmin} fundId={null} potId={pot.id} onClose={close} />;
+  }
+
   return (
     <>
       <Header title={pot.name} onBack={onBack} />
@@ -322,10 +334,11 @@ function AssetDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; 
       </div>
       {error && <Banner kind="error">{error}</Banner>}
 
+      <h2>Сопутствующие расходы</h2>
+      <p className="muted small">Агентские, нотариус, ремонт, налог: списываются из свободных, на стоимость актива не влияют.</p>
+      <Button small onClick={() => setAdding(true)}>Добавить расход</Button>
       {!!expenses.data?.length && (
         <>
-          <h2>Сопутствующие расходы</h2>
-          <p className="muted small">Расходы, внесённые с фондом «Актив»: списываются из свободных, на стоимость актива не влияют.</p>
           <ul className="tag-rank">
             {expenses.data.map((e) => (
               <li key={e.id}>
