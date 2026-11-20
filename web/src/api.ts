@@ -312,7 +312,7 @@ export interface PotQuotes {
   currency: string;
   points: { date: string; price: number }[];
   /** toPotId: продажа актива положила деньги в этот вклад; linked: запись следует за продажей актива и руками не правится */
-  moves: { id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: boolean; price: number | null }[];
+  moves: { id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: boolean; pairPotId: number | null; salePotId: number | null; price: number | null }[];
 }
 
 /** Запись до или после изменения; у корректировки нет фонда и вида. */

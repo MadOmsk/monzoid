@@ -1350,6 +1350,46 @@ export function buildApp(options: AppOptions) {
     });
   });
 
+  // Перевод между вкладами в основной валюте и валюте: вывод из одного и вложение в другой одной парой сделок.
+  // Свободные средства не меняются; у валюты своё количество (сколько продано и сколько куплено)
+  app.post(`${L}/pots/transfer`, async (req) => {
+    const { ledgerId, userId } = access(req, true);
+    const body = z
+      .object({
+        fromPotId: z.number().int(),
+        toPotId: z.number().int(),
+        date: Day,
+        amount: Money.refine((v) => v > 0, 'Укажи сумму'),
+        fromUnits: z.number().finite().nonnegative().default(0),
+        toUnits: z.number().finite().nonnegative().default(0),
+        comment: Comment,
+        recalc: z.boolean().default(false),
+      })
+      .parse(req.body);
+    if (body.fromPotId === body.toPotId) throw new DomainError('Выбери разные вклады.');
+    const from = { id: body.fromPotId, ...potOf(ledgerId, body.fromPotId) };
+    const to = { id: body.toPotId, ...potOf(ledgerId, body.toPotId) };
+    for (const pot of [from, to]) if (pot.kind !== 'cash' && pot.kind !== 'currency') throw new DomainError('Переводить можно между деньгами в основной валюте и валютой.');
+    if (from.kind === 'currency' && !body.fromUnits) throw new DomainError(`Укажи, сколько ${from.currency} списать.`);
+    if (to.kind === 'currency' && !body.toUnits) throw new DomainError(`Укажи, сколько ${to.currency} получено.`);
+    assertWritable(db, ledgerId, body.date, body.recalc);
+    return tx(db, () => {
+      const names = all<{ id: number; name: string }>(db, 'SELECT id, name FROM pots WHERE id IN (?, ?)', from.id, to.id);
+      const name = (id: number) => names.find((p) => p.id === id)!.name;
+      const note = (text: string) => body.comment || text;
+      const out = Number(
+        run(db, 'INSERT INTO pot_moves (pot_id, date, amount, units, comment) VALUES (?, ?, ?, ?, ?)', from.id, body.date, -body.amount, from.kind === 'currency' ? -body.fromUnits : 0, note(`Перевод в «${name(to.id)}»`)).lastInsertRowid,
+      );
+      const into = Number(
+        run(db, 'INSERT INTO pot_moves (pot_id, date, amount, units, comment, pair_id) VALUES (?, ?, ?, ?, ?, ?)', to.id, body.date, body.amount, to.kind === 'currency' ? body.toUnits : 0, note(`Перевод из «${name(from.id)}»`), out).lastInsertRowid,
+      );
+      run(db, 'UPDATE pot_moves SET pair_id = ? WHERE id = ?', into, out);
+      logChange(db, ledgerId, userId, 'pot_move', out, 'create', null, snapshot(db, 'pot_move', out));
+      logChange(db, ledgerId, userId, 'pot_move', into, 'create', null, snapshot(db, 'pot_move', into));
+      return { fromId: out, toId: into };
+    });
+  });
+
   // Покупка или продажа акций по тикеру: количество и цена за штуку в валюте акции. Вклад под тикер заводится сам,
   // сумма в основной валюте считается по курсу на дату сделки, а без него по последнему
   // Курс сделки: Нацбанк на дату, а если его нет, последний известный
@@ -1495,6 +1535,14 @@ export function buildApp(options: AppOptions) {
       if (pot.kind === 'asset') assertAssetUnits(potId);
       const after = snapshot(db, 'pot_move', moveId);
       if (JSON.stringify(after) !== JSON.stringify(before)) logChange(db, ledgerId, userId, 'pot_move', moveId, 'update', before, after);
+      // Вторая половина перевода получает ту же дату и сумму с обратным знаком, иначе поменяются свободные
+      const pair = get<{ id: number }>(db, 'SELECT id FROM pot_moves WHERE id = (SELECT pair_id FROM pot_moves WHERE id = ?) AND inactive_at IS NULL', moveId);
+      if (pair) {
+        const pairBefore = snapshot(db, 'pot_move', pair.id);
+        run(db, 'UPDATE pot_moves SET date = ?, amount = ? WHERE id = ?', body.date, -body.amount, pair.id);
+        const pairAfter = snapshot(db, 'pot_move', pair.id);
+        if (JSON.stringify(pairAfter) !== JSON.stringify(pairBefore)) logChange(db, ledgerId, userId, 'pot_move', pair.id, 'update', pairBefore, pairAfter);
+      }
     });
     return { ok: true };
   });
@@ -1513,6 +1561,13 @@ export function buildApp(options: AppOptions) {
       run(db, `UPDATE pot_moves SET inactive_at = datetime('now') WHERE id = ?`, moveId);
       if (pot.kind === 'asset') assertAssetUnits(potId);
       logChange(db, ledgerId, userId, 'pot_move', moveId, 'delete', before, null);
+      // Перевод между вкладами убирается целиком
+      const pair = get<{ id: number }>(db, 'SELECT id FROM pot_moves WHERE id = (SELECT pair_id FROM pot_moves WHERE id = ?) AND inactive_at IS NULL', moveId);
+      if (pair) {
+        const pairBefore = snapshot(db, 'pot_move', pair.id);
+        run(db, `UPDATE pot_moves SET inactive_at = datetime('now') WHERE id = ?`, pair.id);
+        logChange(db, ledgerId, userId, 'pot_move', pair.id, 'delete', pairBefore, null);
+      }
     });
     return { ok: true };
   });

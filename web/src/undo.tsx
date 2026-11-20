@@ -17,7 +17,8 @@ let counter = 0;
 function offerUndo(url: string, method: string, ids: number[]) {
   const ledger = url.match(/^\/ledgers\/(\d+)\//)?.[1];
   if (!ledger || !ids.length) return;
-  const text = ids.length > 1 ? `Изменено записей: ${ids.length}` : method === 'DELETE' ? 'Удалено' : method === 'PUT' ? 'Изменено' : 'Сохранено';
+  // Массовая правка меняет много операций; перевод между вкладами это одна запись из двух половин
+  const text = url.includes('/entries/bulk') ? `Изменено операций: ${ids.length}` : method === 'DELETE' ? 'Удалено' : method === 'PUT' ? 'Изменено' : 'Сохранено';
   listener?.({ base: `/ledgers/${ledger}`, ids, text, key: ++counter });
 }
 

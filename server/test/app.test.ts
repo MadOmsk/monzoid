@@ -471,7 +471,7 @@ describe('основная валюта и копилки', () => {
       const res = await app.inject({ method, url, headers: { 'x-dev-user': '1' }, ...(body ? { payload: body as any } : {}) });
       return { status: res.statusCode, body: res.json() };
     };
-    return { db, call };
+    return { db, app, call };
   }
 
   it('оценивает валюту и акции по курсу, а учёт считает по вложенному', async () => {
@@ -629,6 +629,47 @@ describe('основная валюта и копилки', () => {
     expect(await balance(cash)).toBe(0);
   });
 
+  it('перевод между вкладами: пара сделок, свободные не меняются, правка и удаление идут парой', async () => {
+    const { db, app, call } = start();
+    await refreshMarket(db, market(), '2026-11-02');
+    const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2026-10' })).body.id}`;
+    const cash = (await call('POST', `${base}/pots`, { name: 'Деньги от сделок', kind: 'cash', openingBalance: k(5000) })).body.id;
+    const usd = (await call('POST', `${base}/pots`, { name: 'Доллары', kind: 'currency', currency: 'USD' })).body.id;
+    const flat = (await call('POST', `${base}/pots`, { name: 'Квартира', kind: 'asset' })).body.id;
+    const pots = async () => (await call('GET', `${base}/pots`)).body;
+    const pot = async (id: number) => (await pots()).find((p: any) => p.id === id);
+    const free = async () => (await call('GET', `${base}/summary?ym=2026-10`)).body.report.freeAfter;
+    const transfer = (body: object) => app.inject({ method: 'POST', url: `${base}/pots/transfer`, headers: { 'x-dev-user': '1' }, payload: { date: '2026-10-05', amount: k(1000), comment: '', ...body } });
+
+    expect((await transfer({ fromPotId: cash, toPotId: cash })).statusCode).toBe(400);
+    expect((await transfer({ fromPotId: cash, toPotId: flat })).statusCode).toBe(400);
+    expect((await transfer({ fromPotId: cash, toPotId: usd })).statusCode).toBe(400);
+
+    const res = await transfer({ fromPotId: cash, toPotId: usd, toUnits: 2 });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-change-id']).toMatch(/^\d+,\d+$/);
+    expect(await pot(cash)).toMatchObject({ balance: k(4000) });
+    expect(await pot(usd)).toMatchObject({ balance: k(1000), units: 2 });
+    expect(await free()).toBe(0);
+    const moves = (await call('GET', `${base}/pots/${usd}/quotes`)).body.moves;
+    expect(moves[0]).toMatchObject({ comment: 'Перевод из «Деньги от сделок»', pairPotId: cash });
+
+    // Правка суммы с одной стороны переносится на другую
+    expect((await call('PUT', `${base}/pots/${usd}/moves/${moves[0].id}`, { date: '2026-10-06', amount: k(1200), units: 2, comment: '' })).status).toBe(200);
+    expect(await pot(cash)).toMatchObject({ balance: k(3800) });
+    expect(await free()).toBe(0);
+    // Удаление одной стороны убирает перевод целиком, отмена по номерам возвращает обе
+    const removed = await app.inject({ method: 'DELETE', url: `${base}/pots/${usd}/moves/${moves[0].id}`, headers: { 'x-dev-user': '1' } });
+    expect(await pot(cash)).toMatchObject({ balance: k(5000) });
+    expect(await pot(usd)).toMatchObject({ balance: 0, units: 0 });
+    const ids = String(removed.headers['x-change-id']).split(',').reverse();
+    expect(ids).toHaveLength(2);
+    for (const id of ids) expect((await call('POST', `${base}/changes/${id}/revert`)).status).toBe(200);
+    expect(await pot(cash)).toMatchObject({ balance: k(3800) });
+    expect(await pot(usd)).toMatchObject({ balance: k(1200), units: 2 });
+    expect(await free()).toBe(0);
+  });
+
   it('сделки вклада правятся и снимаются, в закрытом месяце через журнал; вклад переименовывается', async () => {
     const { db, call } = start();
     await refreshMarket(db, market(), '2026-11-02');
@@ -698,7 +739,7 @@ describe('основная валюта и копилки', () => {
     await call('POST', `${base}/pots/${usd}/moves`, { date: '2026-10-06', amount: k(44000), units: 100 });
 
     const stock = (await call('GET', `${base}/pots/${apple}/quotes`)).body;
-    expect(stock).toEqual({ currency: 'USD', points: [{ date: '2026-10-01', price: 190 }, { date: '2026-10-02', price: 200 }], moves: [{ id: expect.any(Number), date: '2026-10-06', amount: k(90000), units: 2, comment: '', toPotId: null, linked: false, price: 100 }] });
+    expect(stock).toEqual({ currency: 'USD', points: [{ date: '2026-10-01', price: 190 }, { date: '2026-10-02', price: 200 }], moves: [{ id: expect.any(Number), date: '2026-10-06', amount: k(90000), units: 2, comment: '', toPotId: null, linked: false, pairPotId: null, salePotId: null, price: 100 }] });
     await call('GET', `${base}/pots/${apple}/quotes`);
     expect(dailyCalls).toBe(1);
 

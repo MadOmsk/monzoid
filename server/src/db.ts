@@ -437,6 +437,10 @@ export function openDb(path: string): Db {
     db.exec('ALTER TABLE pot_moves ADD COLUMN sale_move_id INTEGER REFERENCES pot_moves(id)');
     db.exec('ALTER TABLE pot_moves ADD COLUMN entry_id INTEGER REFERENCES entries(id)');
   }
+  if (!all<{ name: string }>(db, 'PRAGMA table_info(pot_moves)').some((c) => c.name === 'pair_id')) {
+    // Перевод между вкладами: две сделки ссылаются друг на друга, дата и сумма у них общие, свободные не меняются
+    db.exec('ALTER TABLE pot_moves ADD COLUMN pair_id INTEGER REFERENCES pot_moves(id)');
+  }
   const batchColumns = all<{ name: string }>(db, 'PRAGMA table_info(import_batches)');
   if (!batchColumns.some((c) => c.name === 'draft')) {
     // Черновик проверки выписки сохраняется при каждом изменении; sent_at отмечает отправку в учёт

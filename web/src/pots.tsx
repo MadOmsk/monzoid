@@ -101,7 +101,7 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
   if (!data) return <Spinner />;
   const open = data.find((p) => p.id === openId);
   if (open?.kind === 'asset') return <AssetDetail base={base} pot={open} isAdmin={isAdmin} userId={userId} ym={currentYm ?? today().slice(0, 7)} onChanged={reload} onBack={() => setOpenId(null)} />;
-  if (open) return <PotDetail base={base} pot={open} isAdmin={isAdmin} onChanged={reload} onBack={() => setOpenId(null)} />;
+  if (open) return <PotDetail base={base} pot={open} isAdmin={isAdmin} onChanged={reload} onBack={() => setOpenId(null)} onOpenPot={(id) => { setOpenId(id); window.scrollTo(0, 0); }} />;
 
   // Администратору видны все вкладки: на пустой можно завести первый вклад этого вида
   const present = isAdmin ? TABS : TABS.filter(([t]) => data.some((p) => tabOf(p.kind) === t));
@@ -188,12 +188,13 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
       })}
       {dates.length > 0 && <p className="muted small">Курсы и котировки обновляются раз в день, данные на {dates.map((d) => dayMonth(d)).join(', ')}. Курсы: Нацбанк РК, котировки: Yahoo Finance. Нажми на вклад, чтобы посмотреть котировки за год.</p>}
       {isAdmin && current === 'stock' && <StockTrade base={base} pots={data} onChanged={reload} />}
+      {isAdmin && current !== 'stock' && <PotTransfer base={base} pots={data} onChanged={reload} />}
       {isAdmin && <PotsManager key={current} base={base} tab={current} pots={shown} baseCurrency={currency} onChanged={reload} />}
     </>
   );
 }
 
-function PotDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; pot: Pot; isAdmin: boolean; onChanged: () => Promise<void>; onBack: () => void }) {
+function PotDetail({ base, pot, isAdmin, onChanged, onBack, onOpenPot }: { base: string; pot: Pot; isAdmin: boolean; onChanged: () => Promise<void>; onBack: () => void; onOpenPot: (id: number) => void }) {
   // У вклада в основной валюте котировок нет, но сделки приходят тем же запросом
   const { data, error, reload } = useLoad<PotQuotes>(`${base}/pots/${pot.id}/quotes`);
   const [period, setPeriod] = useState<Period>('1y');
@@ -255,7 +256,7 @@ function PotDetail({ base, pot, isAdmin, onChanged, onBack }: { base: string; po
           {isAdmin && (pot.kind === 'stock' && pot.ticker
             ? <StockTrade base={base} pots={[pot]} fixed={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />
             : <PotMove base={base} pot={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />)}
-          <Deals base={base} pot={pot} moves={data.moves} unit={unit} isAdmin={isAdmin} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />
+          <Deals base={base} pot={pot} moves={data.moves} unit={unit} isAdmin={isAdmin} onOpenPot={onOpenPot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />
         </>
       )}
     </>
@@ -602,6 +603,7 @@ function RenamePot({ base, pot, onChanged }: { base: string; pot: Pot; onChanged
 }
 
 function dealTitle(pot: Pot, m: PotQuotes['moves'][number]): string {
+  if (m.pairPotId) return m.amount > 0 ? 'Перевод из вклада' : 'Перевод в другой вклад';
   if (m.units > 0) return 'Покупка';
   if (m.units < 0) return 'Продажа';
   if (pot.kind === 'asset') return m.amount > 0 ? 'Вложение' : 'Возврат';
@@ -621,12 +623,14 @@ function stockSumHint(count: string, price: string, priceIn: 'stock' | 'base', f
   return `Сумма: ${amount(units * each)} ${symbol(currency)}, в ${symbol()} пересчитается по курсу Нацбанка на дату сделки`;
 }
 
-function Deals({ base, pot, moves, unit, isAdmin, onChanged }: {
+function Deals({ base, pot, moves, unit, isAdmin, onOpenPot, onChanged }: {
   base: string;
   pot: Pot;
   moves: PotQuotes['moves'];
   unit: string;
   isAdmin: boolean;
+  /** Открыть другой вклад: запись по продаже актива меняется в карточке этого актива */
+  onOpenPot?: (id: number) => void;
   onChanged: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState<number | null>(null);
@@ -700,7 +704,7 @@ function Deals({ base, pot, moves, unit, isAdmin, onChanged }: {
               <span>
                 {shortDate(m.date)}{m.comment && ` · ${m.comment}`}
                 {m.toPotId && ` · деньги во вклад «${cashPots.find((p) => p.id === m.toPotId)?.name ?? '…'}»`}
-                {m.linked && ' · по продаже актива'}
+                {m.linked && ' · по продаже актива, меняется в его карточке'}
               </span>
               {counted && m.units !== 0 && <span>{amount(Math.abs(m.units), 4)}{m.price !== null && ` по ${amount(m.price)} ${unit}`}</span>}
             </div>
@@ -766,6 +770,7 @@ function Deals({ base, pot, moves, unit, isAdmin, onChanged }: {
           );
         }
         // Запись по продаже актива правится через продажу и расходы в карточке актива
+        if (m.linked && m.salePotId && onOpenPot) return <li key={m.id}><button type="button" onClick={() => onOpenPot(m.salePotId!)}>{body}</button></li>;
         return <li key={m.id}>{isAdmin && !m.linked ? <button type="button" onClick={() => edit(m)}>{body}</button> : <div className="static">{body}</div>}</li>;
       })}
     </ul>
@@ -946,6 +951,85 @@ function StockTrade({ base, pots, fixed, inline, onChanged }: { base: string; po
           </p>
         )}
     </Section>
+  );
+}
+
+/** Количество валюты для поля ввода по сумме в основной валюте и курсу; без курса пусто. */
+function unitsFor(sum: string, perUnit: number | null): number | null {
+  const value = parseMoney(sum);
+  return value && value > 0 && perUnit ? Math.round((value / 100 / perUnit) * 100) / 100 : null;
+}
+
+/**
+ * Перевод между вкладами в основной валюте и валютой: вывод из одного и вложение в другой одной парой сделок.
+ * Свободные средства не меняются. Количество валюты по умолчанию считается по курсу Нацбанка на дату.
+ */
+function PotTransfer({ base, pots, onChanged }: { base: string; pots: Pot[]; onChanged: () => Promise<void> }) {
+  const movable = pots.filter((p) => p.kind === 'cash' || p.kind === 'currency');
+  const [from, setFrom] = useState<number | ''>(movable.find((p) => p.kind === 'cash')?.id ?? '');
+  const [to, setTo] = useState<number | ''>('');
+  const [sum, setSum] = useState('');
+  const [fromUnits, setFromUnits] = useState('');
+  const [toUnits, setToUnits] = useState('');
+  const [date, setDate] = useState(today());
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+  const src = movable.find((p) => p.id === from);
+  const dst = movable.find((p) => p.id === to);
+  const rate = (pot?: Pot) => useLoad<MarketPrice>(pot?.kind === 'currency' ? `${base}/market/price?date=${date}&currency=${pot.currency}` : null).data;
+  const srcRate = rate(src);
+  const dstRate = rate(dst);
+  if (movable.length < 2) return null;
+  const autoFrom = unitsFor(sum, srcRate ? srcRate.price * srcRate.rate : null);
+  const autoTo = unitsFor(sum, dstRate ? dstRate.price * dstRate.rate : null);
+
+  async function save() {
+    if (!src || !dst) return setError('Выбери, откуда и куда.');
+    const value = parseMoney(sum);
+    if (!value || value <= 0) return setError(`Укажи сумму в ${symbol()}.`);
+    const outUnits = src.kind === 'currency' ? (fromUnits.trim() ? parseUnits(fromUnits) : autoFrom) : 0;
+    const inUnits = dst.kind === 'currency' ? (toUnits.trim() ? parseUnits(toUnits) : autoTo) : 0;
+    if (src.kind === 'currency' && !outUnits) return setError(`Укажи, сколько ${symbol(src.currency)} списать.`);
+    if (dst.kind === 'currency' && !inUnits) return setError(`Укажи, сколько ${symbol(dst.currency)} получено.`);
+    try {
+      const res = await withRecalc((recalc) => api.post(`${base}/pots/transfer`, { fromPotId: src.id, toPotId: dst.id, date, amount: value, fromUnits: outUnits, toUnits: inUnits, comment: '', recalc }));
+      if (res === null) return;
+      setError(null);
+      setDone(`Переведено ${money(value)}: «${src.name}» → «${dst.name}». Свободные средства не изменились.`);
+      setSum('');
+      setFromUnits('');
+      setToUnits('');
+      await onChanged();
+    } catch (e) {
+      setDone(null);
+      setError((e as Error).message);
+    }
+  }
+
+  const choose = (label: string, value: number | '', set: (v: number | '') => void, except: number | '') => (
+    <select aria-label={label} value={value} onChange={(e) => set(e.target.value ? Number(e.target.value) : '')}>
+      <option value="">{label}</option>
+      {movable.filter((p) => p.id !== except).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+    </select>
+  );
+  return (
+    <details className="section">
+      <summary>Перевести между вкладами</summary>
+      <div className="section-body">
+        {error && <Banner kind="error">{error}</Banner>}
+        {done && <Banner kind="ok">{done}</Banner>}
+        <p className="muted small">Деньги уходят из одного вклада и сразу приходят в другой: ни в доходы и расходы, ни в свободные средства перевод не попадает. Для валюты количество считается по курсу Нацбанка на дату, его можно поправить.</p>
+        <div className="inline-form wrap">
+          {choose('Откуда', from, setFrom, to)}
+          {choose('Куда', to, setTo, from)}
+          <input aria-label={`Сумма, ${symbol()}`} inputMode="decimal" placeholder={`Сумма, ${symbol()}`} value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />
+          {src?.kind === 'currency' && <input aria-label={`Списать, ${symbol(src.currency)}`} inputMode="decimal" placeholder={`Списать, ${symbol(src.currency)}${autoFrom ? ` ≈ ${amount(autoFrom)}` : ''}`} value={fromUnits} onChange={(e) => setFromUnits(numberInput(e.target.value, { decimals: 8 }))} />}
+          {dst?.kind === 'currency' && <input aria-label={`Получено, ${symbol(dst.currency)}`} inputMode="decimal" placeholder={`Получено, ${symbol(dst.currency)}${autoTo ? ` ≈ ${amount(autoTo)}` : ''}`} value={toUnits} onChange={(e) => setToUnits(numberInput(e.target.value, { decimals: 8 }))} />}
+          <DateInput label="Дата" value={date} onChange={setDate} />
+          <Button small onClick={save}>Перевести</Button>
+        </div>
+      </div>
+    </details>
   );
 }
 

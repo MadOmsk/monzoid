@@ -392,7 +392,7 @@ export interface PotQuotes {
   currency: string;
   points: { date: string; price: number }[];
   /** Покупки и продажи; цена единицы в той же валюте, null без количества или курса */
-  moves: { id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: boolean; price: number | null }[];
+  moves: { id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: boolean; pairPotId: number | null; salePotId: number | null; price: number | null }[];
 }
 
 /** Дневные цены акции, раз в сутки на тикер. */
@@ -441,9 +441,13 @@ export async function potQuotes(db: Db, source: MarketSource, potId: number, tod
   }
   const moves: PotQuotes['moves'] = [];
   // toPotId: продажа актива положила деньги в этот вклад; linked: запись следует за продажей и руками не правится
-  for (const move of all<{ id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: number }>(
+  // pairPotId: вклад на другой стороне перевода между вкладами
+  // salePotId: актив, за продажей которого следует запись (её меняют в карточке актива)
+  for (const move of all<{ id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: number; pairPotId: number | null; salePotId: number | null }>(
     db,
-    'SELECT id, date, amount, units, comment, to_pot_id toPotId, sale_move_id IS NOT NULL linked FROM pot_moves WHERE pot_id = ? AND inactive_at IS NULL ORDER BY date, id',
+    `SELECT m.id, m.date, m.amount, m.units, m.comment, m.to_pot_id toPotId, m.sale_move_id IS NOT NULL linked, p.pot_id pairPotId, s.pot_id salePotId
+     FROM pot_moves m LEFT JOIN pot_moves p ON p.id = m.pair_id LEFT JOIN pot_moves s ON s.id = m.sale_move_id
+     WHERE m.pot_id = ? AND m.inactive_at IS NULL ORDER BY m.date, m.id`,
     potId,
   )) {
     let price: number | null = null;
