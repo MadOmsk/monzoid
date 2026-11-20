@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, ApiError, confirmAction, useLoad, withRecalc, type AssetValue, type MarketPrice, type MonthReport, type Pot, type PotQuotes } from './api';
+import { api, ApiError, confirmAction, useLoad, withRecalc, type AssetValue, type Entry, type MarketPrice, type MonthReport, type Pot, type PotQuotes } from './api';
 import { confirmLeave, useBack } from './back';
 import { EntryForm } from './entries';
 import { numberInput, amount, dayMonth, fundLabel, moneyRounded as money, monthShort, niceTicks, shiftYm, parseMoney, parseUnits, signedRounded as signed, symbol, today, toGroupedInput, toInput, tone } from './format';
@@ -283,9 +283,20 @@ function AssetDetail({ base, pot, isAdmin, userId, ym, onChanged, onBack }: { ba
   const [comment, setComment] = useState('');
   const [error, setError] = useState<string | null>(null);
   const owned = pot.units > 0;
-  // Форма расхода по этому активу открывается поверх карточки
-  const [adding, setAdding] = useState(false);
-  useBack(adding, 3, async () => { if (await confirmLeave()) setAdding(false); });
+  // Форма расхода по этому активу открывается поверх карточки: новый расход или правка существующего
+  const [form, setForm] = useState<{ entry?: Entry } | null>(null);
+  useBack(!!form, 3, async () => { if (await confirmLeave()) setForm(null); });
+
+  /** Полная операция для формы правки берётся из списка операций её месяца. */
+  async function openExpense(id: number, date: string) {
+    try {
+      const entry = (await api.get<Entry[]>(`${base}/entries?ym=${date.slice(0, 7)}`)).find((e) => e.id === id);
+      if (!entry) return setError('Операция не найдена.');
+      setForm({ entry });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
 
   async function changed() {
     setError(null);
@@ -315,12 +326,12 @@ function AssetDetail({ base, pot, isAdmin, userId, ym, onChanged, onBack }: { ba
     }
   }
 
-  if (adding) {
+  if (form) {
     const close = async () => {
-      setAdding(false);
+      setForm(null);
       await Promise.all([expenses.reload(), onChanged()]);
     };
-    return <EntryForm base={base} ym={ym} userId={userId} isAdmin={isAdmin} fundId={null} potId={pot.id} onClose={close} />;
+    return <EntryForm base={base} ym={ym} userId={userId} isAdmin={isAdmin} entry={form.entry} fundId={null} potId={pot.id} onClose={close} />;
   }
 
   return (
@@ -336,16 +347,16 @@ function AssetDetail({ base, pot, isAdmin, userId, ym, onChanged, onBack }: { ba
 
       <h2>Сопутствующие расходы</h2>
       <p className="muted small">Агентские, нотариус, ремонт, налог: списываются из свободных, на стоимость актива не влияют.</p>
-      <Button small onClick={() => setAdding(true)}>Добавить расход</Button>
+      <Button small onClick={() => setForm({})}>Добавить расход</Button>
       {!!expenses.data?.length && (
         <>
           <ul className="tag-rank">
             {expenses.data.map((e) => (
               <li key={e.id}>
-                <div className="static">
+                <button type="button" onClick={() => openExpense(e.id, e.date)}>
                   <div className="fund-top"><span className="entry-title">{e.comment || e.description || 'без комментария'}</span><b>{money(e.amount)}</b></div>
                   <div className="fund-bottom muted small"><span>{shortDate(e.date)}{e.fundName ? ` · ${fundLabel(e.fundName)}` : ' · из свободных'}</span></div>
-                </div>
+                </button>
               </li>
             ))}
           </ul>
