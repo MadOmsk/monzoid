@@ -102,7 +102,8 @@ function PotsView({ base, isAdmin, currency, months = [], currentYm }: { base: s
   if (open?.kind === 'asset') return <AssetDetail base={base} pot={open} isAdmin={isAdmin} onChanged={reload} onBack={() => setOpenId(null)} />;
   if (open) return <PotDetail base={base} pot={open} isAdmin={isAdmin} onChanged={reload} onBack={() => setOpenId(null)} />;
 
-  const present = TABS.filter(([t]) => data.some((p) => tabOf(p.kind) === t));
+  // Администратору видны все вкладки: на пустой можно завести первый вклад этого вида
+  const present = isAdmin ? TABS : TABS.filter(([t]) => data.some((p) => tabOf(p.kind) === t));
   const current = present.some(([t]) => t === tab) ? tab : present[0]?.[0] ?? 'currency';
   const shown = data.filter((p) => tabOf(p.kind) === current);
   // У проданных активов стоимость 0; они не мешают итогу, но и не входят в «вложено» как действующие
@@ -114,7 +115,8 @@ function PotsView({ base, isAdmin, currency, months = [], currentYm }: { base: s
   const valueTitle = current === 'currency' ? 'Стоимость валюты' : current === 'stock' ? 'Стоимость акций' : 'Стоимость активов';
   return (
     <>
-      {data.length === 0 && <p className="muted">Вкладов пока нет. Их можно завести ниже: валюту, акции, деньги в основной валюте или активы вроде квартиры и машины.</p>}
+      {data.length === 0 && <p className="muted">Вкладов пока нет. Их можно завести ниже на каждой вкладке: валюту, акции, активы вроде квартиры и машины или деньги в основной валюте.</p>}
+      {data.length > 0 && shown.length === 0 && <p className="muted">Здесь пока ничего нет, первый можно завести ниже.</p>}
       {present.length > 1 && <div className="sticky-head"><Segmented<Tab> value={current} options={present} onChange={setTab} /></div>}
       {shown.length > 0 && (
         <div className="tiles">
@@ -184,8 +186,8 @@ function PotsView({ base, isAdmin, currency, months = [], currentYm }: { base: s
         );
       })}
       {dates.length > 0 && <p className="muted small">Курсы и котировки обновляются раз в день, данные на {dates.map((d) => dayMonth(d)).join(', ')}. Курсы: Нацбанк РК, котировки: Yahoo Finance. Нажми на вклад, чтобы посмотреть котировки за год.</p>}
-      {isAdmin && <StockTrade base={base} pots={data} onChanged={reload} />}
-      {isAdmin && <PotsManager base={base} pots={data} baseCurrency={currency} onChanged={reload} />}
+      {isAdmin && current === 'stock' && <StockTrade base={base} pots={data} onChanged={reload} />}
+      {isAdmin && <PotsManager key={current} base={base} tab={current} pots={shown} baseCurrency={currency} onChanged={reload} />}
     </>
   );
 }
@@ -886,10 +888,11 @@ function StockTrade({ base, pots, fixed, inline, onChanged }: { base: string; po
   );
 }
 
-function PotsManager({ base, pots, baseCurrency, onChanged }: { base: string; pots: Pot[]; baseCurrency: string; onChanged: () => Promise<void> }) {
+/** Действия вкладки: сделки по её вкладам (акции покупаются отдельной формой) и новый вклад её вида. */
+function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: string; tab: Tab; pots: Pot[]; baseCurrency: string; onChanged: () => Promise<void> }) {
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [kind, setKind] = useState<Pot['kind']>('cash');
+  const [kind, setKind] = useState<Pot['kind']>(tab);
   const [currency, setCurrency] = useState(FOREIGN_CURRENCIES.find((c) => c !== baseCurrency)!);
   const [ticker, setTicker] = useState('');
   const [openingBalance, setOpeningBalance] = useState('');
@@ -925,9 +928,9 @@ function PotsManager({ base, pots, baseCurrency, onChanged }: { base: string; po
   return (
     <>
       {error && <Banner kind="error">{error}</Banner>}
-      {pots.length > 0 && (
+      {tab !== 'stock' && pots.length > 0 && (
         <details className="section">
-          <summary>Перевести во вклад или продать</summary>
+          <summary>{tab === 'currency' ? 'Купить или продать валюту' : 'Купить или продать актив'}</summary>
           <div className="section-body">
             <p className="muted small">Покупка забирает деньги из свободных средств, продажа возвращает их туда. В доходы и расходы сделка не попадает. То же можно сделать в карточке вклада.</p>
             <select aria-label="Вклад" value={pot} onChange={(e) => setPot(e.target.value ? Number(e.target.value) : '')}>
@@ -941,15 +944,15 @@ function PotsManager({ base, pots, baseCurrency, onChanged }: { base: string; po
         </details>
       )}
       <details className="section">
-        <summary>Новый вклад</summary>
+        <summary>{tab === 'currency' ? 'Новый вклад в валюте' : tab === 'stock' ? 'Новые акции' : 'Новый актив'}</summary>
         <div className="section-body">
           <div className="inline-form wrap">
-            <select aria-label="Тип вклада" value={kind} onChange={(e) => setKind(e.target.value as Pot['kind'])}>
-              <option value="cash">В основной валюте</option>
-              <option value="currency">Валюта</option>
-              <option value="stock">Акции</option>
-              <option value="asset">Актив: недвижимость, машина</option>
-            </select>
+            {tab === 'asset' && (
+              <select aria-label="Тип" value={kind} onChange={(e) => setKind(e.target.value as Pot['kind'])}>
+                <option value="asset">Актив: недвижимость, машина</option>
+                <option value="cash">Деньги в основной валюте</option>
+              </select>
+            )}
             <input aria-label="Название вклада" placeholder="Название" value={name} onChange={(e) => setName(e.target.value)} />
             {kind === 'currency' && (
               <select aria-label="Валюта" value={currency} onChange={(e) => setCurrency(e.target.value)}>
