@@ -5,6 +5,7 @@ import { dayMonth, money, signed } from './format';
 import { Banner, Button, Header, Spinner } from './ui';
 
 const ACTIONS: Record<ClosedChange['action'], string> = { create: 'Добавлена', update: 'Изменена', delete: 'Удалена' };
+const KINDS: Record<ClosedChange['kind'], string> = { entry: 'операция', adjustment: 'корректировка', asset_value: 'оценка актива', pot_move: 'сделка по вкладу', transfer: 'перенос остатка' };
 
 function when(sqlTime: string): string {
   return new Date(`${sqlTime.replace(' ', 'T')}Z`).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -27,16 +28,16 @@ function differences(c: ClosedChange): string[] {
   return lines;
 }
 
-/** Последние изменения закрытых месяцев. Откат возвращает запись к состоянию до изменения и пересчитывает итоги. */
+/** История изменений: последние добавления, правки и удаления. Отмена возвращает запись к состоянию до изменения. */
 export function ChangesScreen({ base, onBack }: { base: string; onBack: () => void }) {
   const { data, error, reload } = useLoad<ClosedChange[]>(`${base}/changes`);
   const [actionError, setActionError] = useState<string | null>(null);
   useBack(true, 1, onBack);
 
   async function revert(c: ClosedChange) {
-    if (!(await confirmAction('Откатить это изменение? Итоги закрытых месяцев пересчитаются обратно.'))) return;
+    if (!(await confirmAction('Отменить это изменение? Если оно в закрытом месяце, итоги пересчитаются.'))) return;
     try {
-      await api.post(`${base}/changes/${c.id}/revert`);
+      await api.post(`${base}/changes/${c.id}/revert`, { recalc: true });
       setActionError(null);
       await reload();
     } catch (e) {
@@ -46,20 +47,20 @@ export function ChangesScreen({ base, onBack }: { base: string; onBack: () => vo
 
   return (
     <>
-      <Header title="Изменения закрытых месяцев" onBack={onBack} />
-      <p className="muted small">Здесь видны добавления, правки и удаления в закрытых месяцах, после которых итоги пересчитались. Откат возвращает запись как было. Если запись меняли несколько раз, откатывай с самого нового изменения.</p>
+      <Header title="История изменений" onBack={onBack} />
+      <p className="muted small">Последние добавления, правки и удаления операций, сделок по вкладам, оценок, корректировок и переносов. Отмена возвращает запись как было. Если запись меняли несколько раз, отменяй с самого нового изменения.</p>
       {(error || actionError) && <Banner kind="error">{error ?? actionError}</Banner>}
       {!data && !error && <Spinner />}
       {data?.length === 0 && <p className="muted">Изменений пока не было.</p>}
       <ul className="entry-list">
         {data?.map((c) => {
           const state = c.after ?? c.before!;
-          const fund = c.kind === 'entry' ? (state.kind === 'income' ? 'Доход' : c.fundAfter ?? c.fundBefore) : c.kind === 'asset_value' || c.kind === 'pot_move' ? c.fundAfter ?? c.fundBefore : 'Корректировка';
+          const fund = c.kind === 'entry' ? (state.kind === 'income' ? 'Доход' : c.fundAfter ?? c.fundBefore) : c.kind === 'adjustment' ? 'Корректировка' : c.fundAfter ?? c.fundBefore;
           return (
             <li key={c.id}>
               <div className={`static${c.revertedAt ? ' reverted' : ''}`}>
                 <div className="entry-main">
-                  <span className="entry-title">{ACTIONS[c.action]} {c.kind === 'entry' ? 'операция' : c.kind === 'asset_value' ? 'оценка актива' : c.kind === 'pot_move' ? 'сделка по вкладу' : 'корректировка'}</span>
+                  <span className="entry-title">{ACTIONS[c.action]} {KINDS[c.kind]}</span>
                   <span className="muted small entry-date">{when(c.createdAt)}</span>
                 </div>
                 <div className="entry-main small">
@@ -69,9 +70,9 @@ export function ChangesScreen({ base, onBack }: { base: string; onBack: () => vo
                 <div className="muted small">{dayMonth(state.date, true)}{c.userName && ` · ${c.userName}`}</div>
                 {differences(c).map((line) => <div key={line} className="small">{line}</div>)}
                 {c.revertedAt ? (
-                  <div className="muted small">Откачено {when(c.revertedAt)}</div>
+                  <div className="muted small">Отменено {when(c.revertedAt)}</div>
                 ) : (
-                  <div className="stack"><Button small onClick={() => revert(c)}>Откатить</Button></div>
+                  <div className="stack"><Button small onClick={() => revert(c)}>Отменить</Button></div>
                 )}
               </div>
             </li>

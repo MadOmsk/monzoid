@@ -14,6 +14,18 @@ function authHeaders(): Record<string, string> {
   return {};
 }
 
+/** Слушатель записей, попавших в историю изменений (undo.tsx предлагает их отменить). */
+let changeListener: ((url: string, method: string, ids: number[]) => void) | null = null;
+export function onLoggedChange(fn: typeof changeListener) {
+  changeListener = fn;
+}
+
+/** Перезагрузка всех открытых данных, например после отмены изменения. */
+const reloaders = new Set<() => Promise<void>>();
+export function reloadAll() {
+  reloaders.forEach((reload) => void reload());
+}
+
 async function request<T>(method: string, url: string, body?: unknown, form?: FormData): Promise<T> {
   const res = await fetch(`/api${url}`, {
     method,
@@ -22,6 +34,8 @@ async function request<T>(method: string, url: string, body?: unknown, form?: Fo
   });
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new ApiError(data?.error ?? 'Сервер недоступен', res.status);
+  const changed = res.headers.get('X-Change-Id');
+  if (changed && method !== 'GET') changeListener?.(url, method, changed.split(',').map(Number));
   return data as T;
 }
 
@@ -66,6 +80,12 @@ export function useLoad<T>(url: string | null) {
   useEffect(() => {
     setData(null);
     void reload();
+  }, [reload]);
+  useEffect(() => {
+    reloaders.add(reload);
+    return () => {
+      reloaders.delete(reload);
+    };
   }, [reload]);
   return { data, error, reload };
 }
@@ -306,7 +326,7 @@ export interface ChangeState {
 
 export interface ClosedChange {
   id: number;
-  kind: 'entry' | 'adjustment' | 'asset_value' | 'pot_move';
+  kind: 'entry' | 'adjustment' | 'asset_value' | 'pot_move' | 'transfer';
   recordId: number;
   action: 'create' | 'update' | 'delete';
   before: ChangeState | null;

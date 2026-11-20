@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { verifyInitData } from './auth.js';
 import { all, get, run, tx, type Db } from './db.js';
 import { defaultFundEmoji } from './emoji.js';
-import { affectsTotals, listChanges, logChange, revertChange, snapshot, touchesClosed, type EntryState } from './changes.js';
+import { affectsTotals, changeDates, listChanges, logChange, requestChanges, revertChange, snapshot, type EntryState } from './changes.js';
 import { BACKUP_INTERVALS, backupSettings, sendBackup, updateBackupSettings, type DocumentSender } from './backup.js';
 import { assertWritable, buildReports, closeMonth, createVirtualMember, DomainError, ensurePlans, hiddenFundIds, isClosed, isVirtual, leaveLedger, leavePreview, memberDebts, mergeVirtualMember, paceAlerts, reopenMonth, stopCredits, syncCredits, ymOf } from './domain.js';
 import { applyDecisions, createImport, getImport, listOpenImports, listSentImports, revertImport, saveDraft, type UploadedFile } from './imports.js';
@@ -168,6 +168,14 @@ export function buildApp(options: AppOptions) {
     if (error.statusCode && error.statusCode < 500) return reply.status(error.statusCode).send({ error: 'Неверный запрос или слишком большой файл' });
     console.error(error);
     return reply.status(500).send({ error: 'Внутренняя ошибка сервера' });
+  });
+
+  // Номера изменений журнала за этот запрос; клиент по ним предлагает «Отменить»
+  app.addHook('onRequest', (_req, _reply, done) => requestChanges.run([], done));
+  app.addHook('onSend', async (_req, reply, payload) => {
+    const ids = requestChanges.getStore();
+    if (ids?.length && reply.statusCode < 400) reply.header('X-Change-Id', ids.join(','));
+    return payload;
   });
 
   // После успешной записи в базе деньги от продажи актива во вклад приводятся в соответствие с продажами и расходами:
@@ -537,7 +545,7 @@ export function buildApp(options: AppOptions) {
     assertWritable(db, ledgerId, body.date, body.recalc);
     const id = tx(db, () => {
       const id = Number(run(db, 'INSERT INTO fund_transfers (ledger_id, date, amount, from_fund_id, to_fund_id, comment, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)', ledgerId, body.date, body.amount, body.fromFundId, body.toFundId, body.comment, userId).lastInsertRowid);
-      if (touchesClosed(db, ledgerId, body.date)) logChange(db, ledgerId, userId, 'transfer', id, 'create', null, snapshot(db, 'transfer', id));
+      logChange(db, ledgerId, userId, 'transfer', id, 'create', null, snapshot(db, 'transfer', id));
       return id;
     });
     return { id };
@@ -553,7 +561,7 @@ export function buildApp(options: AppOptions) {
     tx(db, () => {
       const before = snapshot(db, 'transfer', id);
       run(db, `UPDATE fund_transfers SET inactive_at = datetime('now') WHERE id = ?`, id);
-      if (touchesClosed(db, ledgerId, row.date)) logChange(db, ledgerId, userId, 'transfer', id, 'delete', before, null);
+      logChange(db, ledgerId, userId, 'transfer', id, 'delete', before, null);
     });
     return { ok: true };
   });
@@ -813,7 +821,7 @@ export function buildApp(options: AppOptions) {
         ).lastInsertRowid,
       );
       setEntryTags(db, ctx.ledgerId, entryId, e.tags ?? []);
-      if (touchesClosed(db, ctx.ledgerId, e.date)) logChange(db, ctx.ledgerId, ctx.userId, 'entry', entryId, 'create', null, snapshot(db, 'entry', entryId));
+      logChange(db, ctx.ledgerId, ctx.userId, 'entry', entryId, 'create', null, snapshot(db, 'entry', entryId));
       noteEntries(db, ctx.ledgerId, ctx.userId, [entryId]);
       if (e.reminderId) {
         const done = run(db, `UPDATE reminders SET status = 'done', entry_id = ? WHERE id = ? AND ledger_id = ? AND user_id = ? AND status <> 'done' AND inactive_at IS NULL`, entryId, e.reminderId, ctx.ledgerId, ctx.userId);
@@ -868,10 +876,8 @@ export function buildApp(options: AppOptions) {
         id,
       );
       if (e.tags) setEntryTags(db, ctx.ledgerId, id, e.tags);
-      if (touchesClosed(db, ctx.ledgerId, old.date, e.date)) {
-        const now = snapshot(db, 'entry', id);
-        if (JSON.stringify(now) !== JSON.stringify(before)) logChange(db, ctx.ledgerId, ctx.userId, 'entry', id, 'update', before, now);
-      }
+      const now = snapshot(db, 'entry', id);
+      if (JSON.stringify(now) !== JSON.stringify(before)) logChange(db, ctx.ledgerId, ctx.userId, 'entry', id, 'update', before, now);
     });
     return { ok: true };
   });
@@ -924,7 +930,7 @@ export function buildApp(options: AppOptions) {
           if (after.tags !== before.tags) setEntryTags(db, ctx.ledgerId, id, after.tags);
         }
         changed++;
-        if (touchesClosed(db, ctx.ledgerId, before.date)) logChange(db, ctx.ledgerId, ctx.userId, 'entry', id, after ? 'update' : 'delete', before, after ? snapshot(db, 'entry', id) : null);
+        logChange(db, ctx.ledgerId, ctx.userId, 'entry', id, after ? 'update' : 'delete', before, after ? snapshot(db, 'entry', id) : null);
       }
       return { changed };
     });
@@ -938,7 +944,7 @@ export function buildApp(options: AppOptions) {
     tx(db, () => {
       const before = snapshot(db, 'entry', id);
       run(db, `UPDATE entries SET inactive_at = datetime('now') WHERE id = ?`, id);
-      if (touchesClosed(db, ctx.ledgerId, entry.date)) logChange(db, ctx.ledgerId, ctx.userId, 'entry', id, 'delete', before, null);
+      logChange(db, ctx.ledgerId, ctx.userId, 'entry', id, 'delete', before, null);
     });
     return { ok: true };
   });
@@ -1149,7 +1155,7 @@ export function buildApp(options: AppOptions) {
     const id = tx(db, () => {
       const id = Number(run(db, 'INSERT INTO adjustments (ledger_id, date, amount, comment) VALUES (?, ?, ?, ?)', ledgerId, body.date, body.amount, body.comment).lastInsertRowid);
       setAdjustmentTags(db, ledgerId, id, body.tags);
-      if (touchesClosed(db, ledgerId, body.date)) logChange(db, ledgerId, userId, 'adjustment', id, 'create', null, snapshot(db, 'adjustment', id));
+      logChange(db, ledgerId, userId, 'adjustment', id, 'create', null, snapshot(db, 'adjustment', id));
       return id;
     });
     return { id };
@@ -1166,12 +1172,12 @@ export function buildApp(options: AppOptions) {
       assertWritable(db, ledgerId, row.date, body.recalc);
       assertWritable(db, ledgerId, body.date, body.recalc);
     }
-    const affectsTotals = body.date !== row.date || body.amount !== row.amount;
     tx(db, () => {
       const before = snapshot(db, 'adjustment', id);
       run(db, 'UPDATE adjustments SET date = ?, amount = ?, comment = ? WHERE id = ?', body.date, body.amount, body.comment, id);
       setAdjustmentTags(db, ledgerId, id, body.tags);
-      if (affectsTotals && touchesClosed(db, ledgerId, row.date, body.date)) logChange(db, ledgerId, userId, 'adjustment', id, 'update', before, snapshot(db, 'adjustment', id));
+      const after = snapshot(db, 'adjustment', id);
+      if (JSON.stringify(after) !== JSON.stringify(before)) logChange(db, ledgerId, userId, 'adjustment', id, 'update', before, after);
     });
     return { ok: true };
   });
@@ -1185,7 +1191,7 @@ export function buildApp(options: AppOptions) {
     tx(db, () => {
       const before = snapshot(db, 'adjustment', id);
       run(db, `UPDATE adjustments SET inactive_at = datetime('now') WHERE id = ?`, id);
-      if (touchesClosed(db, ledgerId, row.date)) logChange(db, ledgerId, userId, 'adjustment', id, 'delete', before, null);
+      logChange(db, ledgerId, userId, 'adjustment', id, 'delete', before, null);
     });
     return { ok: true };
   });
@@ -1195,9 +1201,16 @@ export function buildApp(options: AppOptions) {
     return listChanges(db, ledgerId);
   });
 
+  // Отмена изменения. Администратор отменяет любое, участник только свою операцию. Если отмена задевает
+  // закрытый месяц, нужно согласие на пересчёт, как при обычной правке
   app.post(`${L}/changes/:changeId/revert`, async (req) => {
-    const { ledgerId, userId } = access(req, true);
-    tx(db, () => revertChange(db, ledgerId, userId, Number((req.params as any).changeId)));
+    const ctx = access(req);
+    const changeId = Number((req.params as any).changeId);
+    const { recalc } = z.object({ recalc: z.boolean().default(false) }).parse(req.body ?? {});
+    const change = changeDates(db, ctx.ledgerId, changeId);
+    if (!ctx.isAdmin && (change.userId !== ctx.userId || change.kind !== 'entry')) throw new DomainError('Можно отменить только свою операцию', 403);
+    if (change.totals) for (const date of change.dates) writable(ctx, date, recalc);
+    tx(db, () => revertChange(db, ctx.ledgerId, ctx.userId, changeId));
     return { ok: true };
   });
 
@@ -1332,7 +1345,7 @@ export function buildApp(options: AppOptions) {
       }
       const id = Number(run(db, 'INSERT INTO pot_moves (pot_id, date, amount, units, comment, to_pot_id) VALUES (?, ?, ?, ?, ?, ?)', potId, body.date, body.amount, units, body.comment, toPotId).lastInsertRowid);
       if (pot.kind === 'asset') assertAssetUnits(potId);
-      if (touchesClosed(db, ledgerId, body.date)) logChange(db, ledgerId, userId, 'pot_move', id, 'create', null, snapshot(db, 'pot_move', id));
+      logChange(db, ledgerId, userId, 'pot_move', id, 'create', null, snapshot(db, 'pot_move', id));
       return { id };
     });
   });
@@ -1435,7 +1448,7 @@ export function buildApp(options: AppOptions) {
         if (held + 1e-9 < body.units) throw new DomainError(`На эту дату ${body.ticker} только ${held} шт.`);
       }
       const id = Number(run(db, 'INSERT INTO pot_moves (pot_id, date, amount, units, comment) VALUES (?, ?, ?, ?, ?)', pot.id, body.date, amount, sign * body.units, body.comment?.trim() || shown).lastInsertRowid);
-      if (touchesClosed(db, ledgerId, body.date)) logChange(db, ledgerId, userId, 'pot_move', id, 'create', null, snapshot(db, 'pot_move', id));
+      logChange(db, ledgerId, userId, 'pot_move', id, 'create', null, snapshot(db, 'pot_move', id));
       return { potId: pot.id, id, amount, rate };
     });
   });
@@ -1480,7 +1493,8 @@ export function buildApp(options: AppOptions) {
       const before = snapshot(db, 'pot_move', moveId);
       run(db, 'UPDATE pot_moves SET date = ?, amount = ?, units = ?, comment = ?, to_pot_id = ? WHERE id = ?', body.date, body.amount, units, body.comment, toPotId, moveId);
       if (pot.kind === 'asset') assertAssetUnits(potId);
-      if (changed && touchesClosed(db, ledgerId, row.date, body.date)) logChange(db, ledgerId, userId, 'pot_move', moveId, 'update', before, snapshot(db, 'pot_move', moveId));
+      const after = snapshot(db, 'pot_move', moveId);
+      if (JSON.stringify(after) !== JSON.stringify(before)) logChange(db, ledgerId, userId, 'pot_move', moveId, 'update', before, after);
     });
     return { ok: true };
   });
@@ -1498,7 +1512,7 @@ export function buildApp(options: AppOptions) {
       const before = snapshot(db, 'pot_move', moveId);
       run(db, `UPDATE pot_moves SET inactive_at = datetime('now') WHERE id = ?`, moveId);
       if (pot.kind === 'asset') assertAssetUnits(potId);
-      if (touchesClosed(db, ledgerId, row.date)) logChange(db, ledgerId, userId, 'pot_move', moveId, 'delete', before, null);
+      logChange(db, ledgerId, userId, 'pot_move', moveId, 'delete', before, null);
     });
     return { ok: true };
   });
@@ -1574,7 +1588,7 @@ export function buildApp(options: AppOptions) {
     assertWritable(db, ledgerId, body.date, body.recalc);
     const id = tx(db, () => {
       const id = Number(run(db, 'INSERT INTO asset_values (pot_id, date, value, comment, created_by) VALUES (?, ?, ?, ?, ?)', potId, body.date, body.value, body.comment, userId).lastInsertRowid);
-      if (touchesClosed(db, ledgerId, body.date)) logChange(db, ledgerId, userId, 'asset_value', id, 'create', null, snapshot(db, 'asset_value', id));
+      logChange(db, ledgerId, userId, 'asset_value', id, 'create', null, snapshot(db, 'asset_value', id));
       return id;
     });
     return { id };
@@ -1591,7 +1605,7 @@ export function buildApp(options: AppOptions) {
     tx(db, () => {
       const before = snapshot(db, 'asset_value', id);
       run(db, `UPDATE asset_values SET inactive_at = datetime('now') WHERE id = ?`, id);
-      if (touchesClosed(db, ledgerId, row.date)) logChange(db, ledgerId, userId, 'asset_value', id, 'delete', before, null);
+      logChange(db, ledgerId, userId, 'asset_value', id, 'delete', before, null);
     });
     return { ok: true };
   });

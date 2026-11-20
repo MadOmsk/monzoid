@@ -158,6 +158,9 @@ input.check { width: 20px; height: 20px; padding: 0; margin: 0; accent-color: va
 .tabs { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
 .tabs button { flex: 1 1 auto; min-width: 0; text-align: center; padding: 13px 2px; font-size: 13px; color: var(--muted); white-space: nowrap; }
 .tabs button.active { color: var(--link); font-weight: 600; }
+/* «Сохранено · Отменить» над кнопками внизу */
+.undo-toast { position: fixed; z-index: 20; left: max(12px, calc(50vw - 308px)); right: max(12px, calc(50vw - 308px)); bottom: calc(132px + env(safe-area-inset-bottom)); display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 12px; background: var(--text); color: var(--bg); font-size: 14px; box-shadow: 0 6px 18px rgba(0, 0, 0, .3); }
+.undo-toast button { color: var(--bg); font-weight: 700; white-space: nowrap; }
 
 .footer-bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--card); border-top: 1px solid var(--line); }
 .footer-bar .btn { width: auto; flex: none; }

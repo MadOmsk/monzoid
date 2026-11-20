@@ -69,7 +69,7 @@ export function MoreScreen({ section, base, ledger, me, onSwitch, onChanged }: {
         {isAdmin && link('tags', 'Теги')}
         {isAdmin && link('adjustments', 'Корректировки и переносы')}
         {link('imports', 'Отправленные выписки')}
-        {isAdmin && link('changes', 'Изменения закрытых месяцев')}
+        {isAdmin && link('changes', 'История изменений')}
         {isAdmin && link('backup', 'Копии базы в Telegram')}
         {isAdmin && link('settings', 'Настройки базы', ledger.locked ? 'заблокирована' : undefined)}
       </>

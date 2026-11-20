@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { all, get, run, type Db } from './db.js';
 import { DomainError, isClosed, ymOf } from './domain.js';
 import { normalizeTags, setAdjustmentTags, setEntryTags } from './tags.js';
@@ -117,8 +118,11 @@ export function snapshot(db: Db, kind: ChangeKind, id: number): State | null {
   return row ? { ...row, tags: tagNames(db, 'adjustment_tags', 'adjustment_id', id) } : null;
 }
 
+/** Изменения текущего запроса: их номера уходят клиенту в заголовке X-Change-Id, чтобы сразу предложить «Отменить». */
+export const requestChanges = new AsyncLocalStorage<number[]>();
+
 export function logChange(db: Db, ledgerId: number, userId: number, kind: ChangeKind, recordId: number, action: ChangeAction, before: State | null, after: State | null): void {
-  run(
+  const { lastInsertRowid } = run(
     db,
     'INSERT INTO closed_changes (ledger_id, user_id, kind, record_id, action, before, after) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ledgerId,
@@ -129,6 +133,7 @@ export function logChange(db: Db, ledgerId: number, userId: number, kind: Change
     before ? JSON.stringify(before) : null,
     after ? JSON.stringify(after) : null,
   );
+  requestChanges.getStore()?.push(Number(lastInsertRowid));
 }
 
 export function listChanges(db: Db, ledgerId: number) {
@@ -193,20 +198,38 @@ function restore(db: Db, ledgerId: number, kind: ChangeKind, id: number, state: 
   }
 }
 
+/** Кто сделал изменение, что это за запись и какие даты оно задевает (до и после). */
+export function changeDates(db: Db, ledgerId: number, changeId: number): { userId: number; kind: ChangeKind; dates: string[]; totals: boolean } {
+  const change = revertable(db, ledgerId, changeId);
+  const before = change.before ? (JSON.parse(change.before) as State) : null;
+  const after = change.after ? (JSON.parse(change.after) as State) : null;
+  const dates = [before, after].flatMap((s) => (s ? [s.date] : []));
+  // Отмена правки комментария итогов не меняет и согласия на пересчёт не просит
+  const strip = ({ comment: _c, ...rest }: State) => JSON.stringify(rest);
+  const totals = !before || !after || (change.kind === 'entry' ? affectsTotals(before as EntryState, after as EntryState) : strip(before) !== strip(after));
+  return { userId: change.user_id, kind: change.kind, dates: [...new Set(dates)], totals };
+}
+
 /** Возвращает запись к состоянию до изменения. Если её меняли позже, сначала нужно откатить более позднее изменение. */
-export function revertChange(db: Db, ledgerId: number, userId: number, changeId: number): void {
-  const change = get<{ kind: ChangeKind; record_id: number; action: ChangeAction; before: string | null; after: string | null; reverted_at: string | null }>(
+/** Изменение, которое можно отменить: ещё не отменено, и запись с тех пор не меняли. */
+function revertable(db: Db, ledgerId: number, changeId: number) {
+  const change = get<{ user_id: number; kind: ChangeKind; record_id: number; before: string | null; after: string | null; reverted_at: string | null }>(
     db,
-    'SELECT kind, record_id, action, before, after, reverted_at FROM closed_changes WHERE id = ? AND ledger_id = ?',
+    'SELECT user_id, kind, record_id, before, after, reverted_at FROM closed_changes WHERE id = ? AND ledger_id = ?',
     changeId,
     ledgerId,
   );
   if (!change) throw new DomainError('Изменение не найдено', 404);
-  if (change.reverted_at) throw new DomainError('Это изменение уже откачено.');
+  if (change.reverted_at) throw new DomainError('Это изменение уже отменено.');
   const current = snapshot(db, change.kind, change.record_id);
   if (JSON.stringify(current) !== (change.after ?? 'null')) {
-    throw new DomainError('Запись менялась после этого. Сначала откати более позднее изменение.');
+    throw new DomainError('Запись менялась после этого. Сначала отмени более позднее изменение.');
   }
+  return change;
+}
+
+export function revertChange(db: Db, ledgerId: number, userId: number, changeId: number): void {
+  const change = revertable(db, ledgerId, changeId);
   const table = TABLES[change.kind];
   if (change.before) restore(db, ledgerId, change.kind, change.record_id, JSON.parse(change.before));
   else run(db, `UPDATE ${table} SET inactive_at = datetime('now') WHERE id = ?`, change.record_id);

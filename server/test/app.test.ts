@@ -565,10 +565,12 @@ describe('основная валюта и копилки', () => {
 
     expect((await call('DELETE', `${base}/pots/${flat}/values/${later}`)).status).toBe(200);
     expect((await report('2026-10')).assetsAfter).toBe(k(31000));
-    const changes = (await call('GET', `${base}/changes`)).body;
+    // В журнале все изменения; оценка закрытого месяца откатывается только с согласием на пересчёт
+    const changes = (await call('GET', `${base}/changes`)).body.filter((c: any) => c.kind === 'asset_value' && c.after?.date === '2026-09-30');
     expect(changes).toHaveLength(1);
     expect(changes[0]).toMatchObject({ kind: 'asset_value', action: 'create', fundAfter: 'Квартира' });
-    expect((await call('POST', `${base}/changes/${changes[0].id}/revert`)).status).toBe(200);
+    expect((await call('POST', `${base}/changes/${changes[0].id}/revert`)).status).toBe(409);
+    expect((await call('POST', `${base}/changes/${changes[0].id}/revert`, { recalc: true })).status).toBe(200);
     expect((await report('2026-09')).assetsAfter).toBe(k(28000));
     // Активы не получают курсов и цен вкладов
     await refreshMarket(db, market(), '2026-11-03');
@@ -623,7 +625,7 @@ describe('основная валюта и копилки', () => {
     expect((await report('2026-09')).freeAfter).toBe(-k(100));
     const change = (await call('GET', `${base}/changes`)).body[0];
     expect(change).toMatchObject({ kind: 'pot_move', action: 'update', after: { toPotId: cash } });
-    expect((await call('POST', `${base}/changes/${change.id}/revert`)).status).toBe(200);
+    expect((await call('POST', `${base}/changes/${change.id}/revert`, { recalc: true })).status).toBe(200);
     expect(await balance(cash)).toBe(0);
   });
 
@@ -649,9 +651,9 @@ describe('основная валюта и копилки', () => {
     expect((await call('DELETE', `${base}/pots/${flat}/moves/${sell}`)).status).toBe(200);
     expect((await report('2026-10')).assetsAfter).toBe(k(27000));
 
-    const changes = (await call('GET', `${base}/changes`)).body;
+    const changes = (await call('GET', `${base}/changes`)).body.filter((c: any) => c.action === 'update');
     expect(changes).toMatchObject([{ kind: 'pot_move', action: 'update', fundAfter: 'Квартира' }]);
-    expect((await call('POST', `${base}/changes/${changes[0].id}/revert`)).status).toBe(200);
+    expect((await call('POST', `${base}/changes/${changes[0].id}/revert`, { recalc: true })).status).toBe(200);
     expect((await report('2026-09')).assetMoves).toBe(k(28000));
 
     expect((await call('PATCH', `${base}/pots/${flat}`, { name: 'Квартира на Абая' })).status).toBe(200);
@@ -1008,7 +1010,7 @@ describe('переносы остатков и архивация фондов',
     const comments = (await call(1, 'GET', `${base}/entries?ym=${prev}&fundId=${food}`)).body.map((e: any) => e.comment).sort();
     expect(comments).toEqual(['мойка', 'омыватель']);
     // Перенесённые операции закрытого месяца попали в журнал
-    expect((await call(1, 'GET', `${base}/changes`)).body.filter((c: any) => c.kind === 'entry')).toHaveLength(2);
+    expect((await call(1, 'GET', `${base}/changes`)).body.filter((c: any) => c.kind === 'entry' && c.action === 'update')).toHaveLength(2);
     // Одну операцию потом перенесли руками: отмена её не трогает
     const moved = (await call(1, 'GET', `${base}/entries?ym=${prev}&fundId=${food}`)).body.find((e: any) => e.comment === 'омыватель');
     await call(1, 'PUT', `${base}/entries/${moved.id}`, { ...moved, fundId: fund('Такси'), recalc: true });
@@ -1209,7 +1211,10 @@ describe('журнал изменений закрытых месяцев', () =
     await call(1, 'POST', `${base}/entries`, { date: '2026-10-07', kind: 'expense', amount: k(1), fundId: fund('Еда') });
     await call(1, 'POST', `${base}/months/2026-10/close`);
     const spent = async () => (await call(1, 'GET', `${base}/summary?ym=2026-10`)).body.report.spentTotal;
-    const changes = async () => (await call(1, 'GET', `${base}/changes`)).body;
+    // Добавления до закрытия тоже в журнале; дальше смотрим только новые изменения
+    const everything = async () => (await call(1, 'GET', `${base}/changes`)).body;
+    const since = (await everything())[0].id;
+    const changes = async () => (await everything()).filter((c: any) => c.id > since);
     expect(await changes()).toEqual([]);
 
     await call(1, 'PUT', `${base}/entries/${id}`, { date: '2026-10-05', kind: 'expense', amount: k(300), fundId: fund('Еда'), comment: 'рынок', tags: ['фрукты'], recalc: true });
@@ -1225,15 +1230,51 @@ describe('журнал изменений закрытых месяцев', () =
     await call(1, 'PUT', `${base}/entries/${id}`, { date: '2026-10-05', kind: 'expense', amount: k(400), fundId: fund('Еда'), comment: 'рынок', tags: ['фрукты'], recalc: true });
     expect((await call(1, 'POST', `${base}/changes/${edit.id}/revert`)).status).toBe(400);
     const latest = (await changes())[0];
-    expect((await call(1, 'POST', `${base}/changes/${latest.id}/revert`)).status).toBe(200);
-    expect((await call(1, 'POST', `${base}/changes/${edit.id}/revert`)).status).toBe(200);
+    expect((await call(1, 'POST', `${base}/changes/${latest.id}/revert`, { recalc: true })).status).toBe(200);
+    expect((await call(1, 'POST', `${base}/changes/${edit.id}/revert`, { recalc: true })).status).toBe(200);
     expect((await call(1, 'POST', `${base}/changes/${edit.id}/revert`)).status).toBe(400);
-    expect((await call(1, 'POST', `${base}/changes/${remove.id}/revert`)).status).toBe(200);
-    expect((await call(1, 'POST', `${base}/changes/${create.id}/revert`)).status).toBe(200);
+    expect((await call(1, 'POST', `${base}/changes/${remove.id}/revert`, { recalc: true })).status).toBe(200);
+    expect((await call(1, 'POST', `${base}/changes/${create.id}/revert`, { recalc: true })).status).toBe(200);
     expect(await spent()).toBe(k(111));
     expect((await call(1, 'GET', `${base}/entries?ym=2026-10`)).body.find((e: any) => e.id === id).tags).toEqual(['овощи']);
     expect((await call(1, 'GET', `${base}/adjustments`)).body).toEqual([]);
     expect((await changes()).every((c: any) => c.revertedAt)).toBe(true);
+  });
+});
+
+describe('отмена любого изменения', () => {
+  it('ответ на запись несёт номер изменения, участник отменяет свою операцию, но не чужую', async () => {
+    const { app, call } = setup();
+    const { base, fund } = await ledger(call);
+    const invite = (await call(1, 'POST', `${base}/invites`)).body;
+    await call(2, 'POST', '/api/invites/accept', { token: invite.token });
+    const send = (user: number, method: 'POST' | 'PUT' | 'DELETE', url: string, payload?: object) =>
+      app.inject({ method, url, headers: { 'x-dev-user': String(user) }, ...(payload ? { payload } : {}) });
+    const spent = async () => (await call(1, 'GET', `${base}/summary?ym=2026-11`)).body.report.spentTotal;
+
+    // Добавление в открытом месяце тоже попадает в журнал, номер приходит в заголовке
+    const added = await send(2, 'POST', `${base}/entries`, { date: '2026-11-02', kind: 'expense', amount: k(10), fundId: fund('Еда') });
+    const changeId = Number(added.headers['x-change-id']);
+    expect(changeId).toBeGreaterThan(0);
+    const admins = await send(1, 'POST', `${base}/entries`, { date: '2026-11-02', kind: 'expense', amount: k(5), fundId: fund('Еда') });
+    expect(await spent()).toBe(k(15));
+    // Чтение номера не даёт
+    expect((await app.inject({ method: 'GET', url: `${base}/entries?ym=2026-11`, headers: { 'x-dev-user': '1' } })).headers['x-change-id']).toBeUndefined();
+
+    expect((await call(2, 'POST', `${base}/changes/${admins.headers['x-change-id']}/revert`)).status).toBe(403);
+    expect((await call(2, 'POST', `${base}/changes/${changeId}/revert`)).status).toBe(200);
+    expect(await spent()).toBe(k(5));
+    expect((await call(2, 'POST', `${base}/changes/${changeId}/revert`)).status).toBe(400);
+
+    // Правка и удаление тоже отменяются: запись возвращается как была
+    const id = admins.json().id;
+    const edited = await send(1, 'PUT', `${base}/entries/${id}`, { date: '2026-11-02', kind: 'expense', amount: k(7), fundId: fund('Еда') });
+    expect((await call(1, 'POST', `${base}/changes/${edited.headers['x-change-id']}/revert`)).status).toBe(200);
+    expect(await spent()).toBe(k(5));
+    const removed = await send(1, 'DELETE', `${base}/entries/${id}`);
+    expect(await spent()).toBe(0);
+    expect((await call(1, 'POST', `${base}/changes/${removed.headers['x-change-id']}/revert`)).status).toBe(200);
+    expect(await spent()).toBe(k(5));
   });
 });
 
@@ -2053,7 +2094,7 @@ describe('правка операции закрытого месяца', () => 
     const entry = (await call(1, 'GET', `${base}/entries?ym=2026-10`)).body[0];
     expect(entry).toMatchObject({ comment: 'зелёный базар', description: 'MAGNUM', amount: k(100) });
     // Правка закрытого месяца всё равно попадает в журнал, её можно откатить; правка без изменений не пишется
-    const changes = (await call(1, 'GET', `${base}/changes`)).body;
+    const changes = (await call(1, 'GET', `${base}/changes`)).body.filter((c: any) => c.action === 'update');
     expect(changes).toHaveLength(1);
     expect(changes[0]).toMatchObject({ action: 'update', before: { comment: 'рынок' }, after: { comment: 'зелёный базар' } });
     expect((await call(1, 'POST', `${base}/changes/${changes[0].id}/revert`)).status).toBe(200);
@@ -2167,7 +2208,8 @@ describe('массовая правка операций', () => {
     // У возврата знак остаётся, у дохода фонда нет
     expect(await by(b)).toMatchObject({ amount: -k(70), fundName: 'Кафе', tags: ['новый'] });
     expect(await by(income)).toMatchObject({ amount: k(70), fundId: null, comment: 'стало' });
-    expect((await call(1, 'GET', `${base}/changes`)).body).toEqual([]);
+    // Каждая операция пачки в журнале и отменяется отдельно
+    expect((await call(1, 'GET', `${base}/changes`)).body.filter((c: any) => c.action === 'update')).toHaveLength(3);
 
     expect((await call(1, 'POST', `${base}/entries/bulk`, { ids: [a] })).status).toBe(400);
     expect((await call(1, 'POST', `${base}/entries/bulk`, { ids: [a], fundId: 999_999 })).status).toBe(404);
@@ -2190,7 +2232,7 @@ describe('массовая правка операций', () => {
 
     // Комментарий итоги не меняет: без вопроса, но в журнал
     expect((await call(1, 'POST', `${base}/entries/bulk`, { ids, comment: 'y' })).status).toBe(200);
-    expect((await call(1, 'GET', `${base}/changes`)).body).toHaveLength(2);
+    expect((await call(1, 'GET', `${base}/changes`)).body.filter((c: any) => c.action === 'update')).toHaveLength(3);
     const blocked = await call(1, 'POST', `${base}/entries/bulk`, { ids, addTags: ['т'] });
     expect(blocked.status).toBe(409);
     expect(JSON.stringify(blocked.body)).toContain('2026-10');
@@ -2199,9 +2241,11 @@ describe('массовая правка операций', () => {
     expect((await call(1, 'POST', `${base}/entries/bulk`, { ids, delete: true })).status).toBe(409);
     expect((await call(1, 'POST', `${base}/entries/bulk`, { ids, delete: true, recalc: true })).status).toBe(200);
     const changes = (await call(1, 'GET', `${base}/changes`)).body as any[];
-    expect(changes.map((c) => c.action)).toEqual(['delete', 'delete', 'update', 'update', 'update', 'update']);
-    // Удаление откатывается по одной операции
-    expect((await call(1, 'POST', `${base}/changes/${changes[0].id}/revert`)).status).toBe(200);
+    expect(changes.map((c) => c.action)).toEqual(['delete', 'delete', 'delete', 'update', 'update', 'update', 'update', 'update', 'update', 'create', 'create', 'create']);
+    // Удаление откатывается по одной операции; в закрытом месяце с согласием на пересчёт
+    const removed = changes.find((c) => c.action === 'delete' && c.recordId === closed1);
+    expect((await call(1, 'POST', `${base}/changes/${removed.id}/revert`)).status).toBe(409);
+    expect((await call(1, 'POST', `${base}/changes/${removed.id}/revert`, { recalc: true })).status).toBe(200);
     expect((await call(1, 'GET', `${base}/entries?ym=2026-10`)).body).toHaveLength(1);
   });
 

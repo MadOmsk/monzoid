@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS statement_queue (
   batch_id INTEGER,
   inactive_at TEXT
 );
--- Изменения закрытых месяцев с пересчётом: состояние до и после, чтобы можно было откатить.
+-- История изменений (название таблицы осталось с тех пор, когда в неё писались только закрытые месяцы): состояние до и после, чтобы можно было отменить.
 CREATE TABLE IF NOT EXISTS closed_changes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ledger_id INTEGER NOT NULL REFERENCES ledgers(id) ON DELETE CASCADE,
