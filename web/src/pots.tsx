@@ -328,7 +328,17 @@ function PotDetail({ base, pot, isAdmin, onChanged, onBack, onOpenPot }: { base:
   return (
     <>
       <Header title={pot.name} onBack={onBack} />
-      <p className="muted small">{potFacts(pot)}</p>
+      {pot.kind === 'currency' || pot.kind === 'stock' ? (
+        // Сколько валюты или акций: главное в карточке, крупно; курс или цена под ним
+        <div className="pot-headline">
+          <strong>{pot.kind === 'stock' ? `${amount(pot.units, 4)} шт.` : `${amount(pot.units)} ${symbol(pot.currency)}`}</strong>
+          {pot.price !== null && (
+            <span>{pot.kind === 'stock' ? `${pot.ticker} · ${amount(pot.price)} ${symbol(pot.currency)} за штуку` : `курс ${amount(pot.price)} ${symbol()} за 1 ${symbol(pot.currency)}`}</span>
+          )}
+        </div>
+      ) : (
+        <p className="muted small">{potFacts(pot)}</p>
+      )}
       {isAdmin && <RenamePot base={base} pot={pot} onChanged={onChanged} />}
       {isAdmin && data && !data.moves.length && pot.balance === 0 && pot.units === 0 && <DeletePot base={base} pot={pot} onDeleted={async () => { onBack(); await onChanged(); }} />}
       {isAdmin && <OpeningEditor base={base} pot={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />}

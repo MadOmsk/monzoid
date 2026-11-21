@@ -121,6 +121,10 @@ input.amount { font-size: 26px; font-weight: 600; }
 .tile { background: var(--card); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tile > span, .tile small { color: var(--muted); font-size: 13px; }
 .tile strong { font-size: 18px; overflow-wrap: anywhere; }
+/* Количество валюты или акций в карточке вклада: крупно, курс под ним */
+.pot-headline { display: flex; flex-direction: column; gap: 2px; }
+.pot-headline strong { font-size: 28px; line-height: 1.15; overflow-wrap: anywhere; }
+.pot-headline span { color: var(--muted); font-size: 15px; }
 .tile.hero, .tile.full { grid-column: 1 / -1; }
 .tile.hero strong { font-size: 30px; }
 
