@@ -249,15 +249,7 @@ function LineChart<T extends { ym: string }>({ rows, series: allSeries, label, t
             </label>
           ))}
         </div>
-      ) : (
-        series.length > 1 && (
-          <div className="legend">
-            {series.map((s) => (
-              <span key={s.label}><i style={{ background: `var(${s.cssVar})` }} />{s.label}</span>
-            ))}
-          </div>
-        )
-      )}
+      ) : null}
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} onPointerMove={pointer} onPointerDown={pointer} onPointerLeave={() => setHover(null)}>
         {ticks.map((t) => (
           <g key={t}>
@@ -294,6 +286,14 @@ function LineChart<T extends { ym: string }>({ rows, series: allSeries, label, t
           <span className="muted">Нажми на график, чтобы увидеть месяц{trends.length > 0 && '. Бледный пунктир это тренд'}</span>
         )}
       </div>
+      {/* Легенда под графиком: при многих фондах она длинная и иначе отодвигает график вниз */}
+      {!(hidden && onHidden) && series.length > 1 && (
+        <div className="legend">
+          {series.map((s) => (
+            <span key={s.label}><i style={{ background: `var(${s.cssVar})` }} />{s.label}</span>
+          ))}
+        </div>
+      )}
     </figure>
   );
 }
