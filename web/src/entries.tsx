@@ -520,7 +520,7 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
   const [fromPot, setFromPot] = useState<number | ''>('');
   const currencyPots = (pots ?? []).filter((p) => p.kind === 'currency' && p.units > 0);
   const payPot = currencyPots.find((p) => p.id === fromPot);
-  const canPayFromPot = isAdmin && !entry && kind === 'expense' && fund !== '' && fund !== ASSET && currencyPots.length > 0;
+  const canPayFromPot = isAdmin && !entry && kind === 'expense' && fund !== ASSET && currencyPots.length > 0;
   const selling = canPayFromPot && paidFromPot;
   const quote = useLoad<MarketPrice>(selling && payPot ? `${base}/market/price?date=${date}&currency=${payPot.currency}` : null);
   const fx = useFx(quote.data ? quote.data.price * quote.data.rate : null);
