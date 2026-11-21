@@ -1175,7 +1175,7 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
         <details className="section">
           <summary>{tab === 'currency' ? 'Купить или продать валюту' : tab === 'cash' ? 'Положить или забрать' : 'Купить или продать актив'}</summary>
           <div className="section-body">
-            <p className="muted small">Покупка забирает деньги из свободных средств, продажа возвращает их туда. В доходы и расходы сделка не попадает. То же можно сделать в карточке вклада.</p>
+            <p className="muted small">Покупка забирает деньги из свободных средств, продажа возвращает их туда. В доходы и расходы сделка не попадает. То же можно сделать в карточке вклада.{tab === 'currency' && ' Купить на деньги из другого вклада, например от сделок, можно в «Перевести между вкладами».'}</p>
             <select aria-label="Вклад" value={pot} onChange={(e) => setPot(e.target.value ? Number(e.target.value) : '')}>
               <option value="">Выбери вклад</option>
               {pots.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -1198,10 +1198,16 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
               </select>
             )}
             {kind === 'stock' && <input aria-label="Тикер" placeholder="Тикер: AAPL" autoCapitalize="characters" value={ticker} onChange={(e) => setTicker(e.target.value)} />}
-            <input aria-label="Уже вложено" inputMode="text" placeholder={kind === 'asset' ? `Стоимость, если уже есть, ${symbol()}` : `Уже вложено, ${symbol()}`} value={openingBalance} onChange={(e) => setOpeningBalance(numberInput(e.target.value))} />
-            {kind !== 'cash' && kind !== 'asset' && <input aria-label="Уже есть" inputMode="text" placeholder={kind === 'stock' ? 'Уже есть, шт.' : `Уже есть, ${symbol(currency)}`} value={openingUnits} onChange={(e) => setOpeningUnits(numberInput(e.target.value, { decimals: 8 }))} />}
+            {kind !== 'cash' && kind !== 'asset' && <input aria-label="Сколько уже есть" inputMode="text" placeholder={kind === 'stock' ? 'Есть, шт.' : `Есть, ${symbol(currency)}`} value={openingUnits} onChange={(e) => setOpeningUnits(numberInput(e.target.value, { decimals: 8 }))} />}
+            <input
+              aria-label="Уже вложено"
+              inputMode="text"
+              placeholder={kind === 'asset' ? `Стоимость, если уже есть, ${symbol()}` : kind === 'cash' ? `Сколько уже лежит, ${symbol()}` : `Заплачено, ${symbol()}`}
+              value={openingBalance}
+              onChange={(e) => setOpeningBalance(numberInput(e.target.value))}
+            />
           </div>
-          <p className="muted small">{kind === 'asset' ? 'Уже имеющийся актив входит в общий итог с первого месяца базы и не списывается со свободных средств. Новый заводится без суммы, а потом покупается переводом.' : 'То, что уже есть, не списывается со свободных средств, но входит в общий итог.'}</p>
+          <p className="muted small">{kind === 'asset' ? 'Уже имеющийся актив входит в общий итог с первого месяца базы и не списывается со свободных средств. Новый заводится без суммы, а потом покупается переводом.' : kind === 'cash' ? 'Сумма, которая уже лежала на старте учёта. Она не списывается со свободных средств, но входит в общий итог.' : `Заполни, только если ${kind === 'stock' ? 'акции были' : 'валюта была'} до начала учёта: «Есть» это сколько у тебя сейчас, «Заплачено» сколько ${symbol()} ты за это отдал, от этого считается доход. Со свободных средств это не списывается. Если будешь покупать в приложении, оставь поля пустыми.`}</p>
           <Button small onClick={create}>Создать</Button>
         </div>
       </details>
