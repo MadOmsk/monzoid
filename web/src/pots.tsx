@@ -290,13 +290,26 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
         const sold = kind === 'asset' ? all.filter((p) => p.units <= 0) : [];
         const group = showSold ? all : all.filter((p) => !sold.includes(p));
         if (!all.length) return null;
-        const sum = totals(group);
+        // Валюта группируется по валютам: группы по убыванию общей стоимости (как фильтр), внутри по убыванию стоимости
+        const lists = kind === 'currency'
+          ? fxCurrencies.map((c) => ({ currency: c, pots: group.filter((p) => p.currency === c) })).filter((l) => l.pots.length)
+          : [{ currency: null as string | null, pots: group }];
         return (
           <section key={kind} className="pot-group">
             {kind === 'asset' && <small className="muted pot-group-sum">Покупка и продажа не входят в доходы и расходы, стоимость задаётся оценкой</small>}
 
+            {lists.map((list) => (
+            <div key={list.currency ?? kind} className="pot-sublist">
+            {list.currency && lists.length > 1 && (
+              <div className="pot-cur-head">
+                <b>{symbol(list.currency)} {list.currency}</b>
+                <span>
+                  {amount(list.pots.reduce((s, p) => s + p.units, 0))}{' '}{symbol(list.currency)} · {money(list.pots.reduce((s, p) => s + (p.value ?? p.balance), 0))}
+                </span>
+              </div>
+            )}
             <ul className="tag-rank">
-              {group.map((p) => {
+              {list.pots.map((p) => {
                 const gain = p.value !== null ? p.value - p.balance : 0;
                 const value = p.value !== null ? money(p.value) : 'нет курса';
                 // У валюты сверху количество в её валюте, под ним стоимость в основной
@@ -319,6 +332,8 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
                 );
               })}
             </ul>
+            </div>
+            ))}
             {sold.length > 0 && (
               <button type="button" className="link" onClick={() => setShowSold(!showSold)}>
                 {showSold ? 'Скрыть проданные' : `Показать проданные: ${sold.length}`}
