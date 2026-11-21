@@ -121,6 +121,8 @@ input.amount { font-size: 26px; font-weight: 600; }
 .tile { background: var(--card); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .tile > span, .tile small { color: var(--muted); font-size: 13px; }
 .tile strong { font-size: 18px; overflow-wrap: anywhere; }
+/* Сколько каждой валюты всего: под суммой в основной валюте, чуть мельче неё */
+.tile-fx { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 20px; font-weight: 700; margin: 2px 0 4px; }
 /* Количество валюты или акций в карточке вклада: крупно, курс под ним */
 .pot-headline { display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 2px; align-items: center; }
 .pot-headline .pot-cur { grid-row: span 2; }

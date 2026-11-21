@@ -225,6 +225,11 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
   const days = shown.flatMap((p) => (p.day ? [p.day] : []));
   const day = days.length ? { gain: days.reduce((s, d) => s + d.gain, 0), since: days.map((d) => d.since).sort()[0] } : null;
   const dates = [...new Set(shown.flatMap((p) => (p.rateDate ? [p.rateDate] : [])))].sort();
+  // Сколько каждой валюты всего: под суммой в основной валюте, по убыванию стоимости
+  const byCurrency = [...shown.filter((p) => p.kind === 'currency' && p.units > 0).reduce((m, p) => {
+    const c = m.get(p.currency) ?? { units: 0, value: 0 };
+    return m.set(p.currency, { units: c.units + p.units, value: c.value + (p.value ?? 0) });
+  }, new Map<string, { units: number; value: number }>())].sort((a, b) => b[1].value - a[1].value);
   const valueTitle = { currency: 'Стоимость валюты', stock: 'Стоимость акций', cash: 'На депозитах', asset: 'Стоимость активов' }[current];
   return (
     <>
@@ -244,6 +249,11 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
           <div className="tile full">
             <span>{valueTitle}</span>
             <strong>{money(sum.value)}</strong>
+            {current === 'currency' && byCurrency.length > 0 && (
+              <div className="tile-fx">
+                {byCurrency.map(([c, t]) => <span key={c}>{amount(t.units)}{' '}{symbol(c)}</span>)}
+              </div>
+            )}
             {current !== 'cash' && <small>{current === 'asset' ? 'уплачено' : 'вложено'} {money(sum.invested)}</small>}
           </div>
           {/* Проценты по депозитам лежат во вкладе как вложение, поэтому «дохода» к вложенному у них нет */}
