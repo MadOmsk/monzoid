@@ -116,21 +116,29 @@ export function nextInterest(db: Db, potId: number, today: string): { due: Inter
 }
 
 /**
+ * Записи во вкладе, которые следуют за операцией (pot_moves.entry_id): правка, удаление и отмена операции переносятся сюда.
  * Проценты по депозиту записываются доходом с привязкой к вкладу (entries.pot_id), а во вкладе появляется
- * вложение на ту же сумму и дату (pot_moves.entry_id). Свободные средства не меняются, доход виден в статистике.
- * Вложение следует за доходом: правка, удаление и отмена дохода переносятся сюда.
+ * вложение на ту же сумму и дату. Свободные средства не меняются, доход виден в статистике.
+ * Расход фонда, оплаченный из вклада в валюте или акциях (entries.pot_units): во вкладе продажа этих единиц
+ * на сумму расхода. Деньги от продажи приходят в свободные, а расход забирает столько же из фонда.
  */
 export function syncInterest(db: Db, ledgerId: number): void {
-  const incomes = all<{ id: number; potId: number; date: string; amount: number }>(
+  const linked = all<{ id: number; potId: number; date: string; amount: number; units: number; comment: string }>(
     db,
-    `SELECT e.id, e.pot_id potId, e.date, e.amount FROM entries e JOIN pots p ON p.id = e.pot_id
-     WHERE e.ledger_id = ? AND e.kind = 'income' AND p.kind = 'cash' AND e.inactive_at IS NULL`,
+    `SELECT e.id, e.pot_id potId, e.date, e.amount, 0 units, 'Проценты' comment FROM entries e JOIN pots p ON p.id = e.pot_id
+     WHERE e.ledger_id = ? AND e.kind = 'income' AND p.kind = 'cash' AND e.inactive_at IS NULL
+     UNION ALL
+     SELECT e.id, e.pot_id, e.date, -e.amount, -e.pot_units,
+       'Оплата: ' || CASE WHEN e.comment <> '' THEN e.comment WHEN e.description <> '' THEN e.description ELSE COALESCE(f.name, 'расход') END
+     FROM entries e JOIN pots p ON p.id = e.pot_id LEFT JOIN funds f ON f.id = e.fund_id
+     WHERE e.ledger_id = ? AND e.kind = 'expense' AND p.kind IN ('currency', 'stock') AND e.pot_units > 0 AND e.inactive_at IS NULL`,
+    ledgerId,
     ledgerId,
   );
-  const wanted = new Map(incomes.map((e) => [e.id, e]));
-  const existing = all<{ id: number; entryId: number; potId: number; date: string; amount: number }>(
+  const wanted = new Map(linked.map((e) => [e.id, e]));
+  const existing = all<{ id: number; entryId: number; potId: number; date: string; amount: number; units: number; comment: string }>(
     db,
-    `SELECT m.id, m.entry_id entryId, m.pot_id potId, m.date, m.amount FROM pot_moves m JOIN pots p ON p.id = m.pot_id
+    `SELECT m.id, m.entry_id entryId, m.pot_id potId, m.date, m.amount, m.units, m.comment FROM pot_moves m JOIN pots p ON p.id = m.pot_id
      WHERE p.ledger_id = ? AND m.entry_id IS NOT NULL AND m.sale_move_id IS NULL AND m.inactive_at IS NULL`,
     ledgerId,
   );
@@ -138,11 +146,11 @@ export function syncInterest(db: Db, ledgerId: number): void {
     const want = wanted.get(row.entryId);
     wanted.delete(row.entryId);
     if (!want) run(db, `UPDATE pot_moves SET inactive_at = datetime('now') WHERE id = ?`, row.id);
-    else if (want.potId !== row.potId || want.date !== row.date || want.amount !== row.amount) {
-      run(db, 'UPDATE pot_moves SET pot_id = ?, date = ?, amount = ? WHERE id = ?', want.potId, want.date, want.amount, row.id);
+    else if (want.potId !== row.potId || want.date !== row.date || want.amount !== row.amount || want.units !== row.units || want.comment !== row.comment) {
+      run(db, 'UPDATE pot_moves SET pot_id = ?, date = ?, amount = ?, units = ?, comment = ? WHERE id = ?', want.potId, want.date, want.amount, want.units, want.comment, row.id);
     }
   }
   for (const e of wanted.values()) {
-    run(db, `INSERT INTO pot_moves (pot_id, date, amount, units, comment, entry_id) VALUES (?, ?, ?, 0, 'Проценты', ?)`, e.potId, e.date, e.amount, e.id);
+    run(db, 'INSERT INTO pot_moves (pot_id, date, amount, units, comment, entry_id) VALUES (?, ?, ?, ?, ?, ?)', e.potId, e.date, e.amount, e.units, e.comment, e.id);
   }
 }

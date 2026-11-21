@@ -116,7 +116,8 @@ export function shiftYm(ym: string, by: number): string {
  */
 export function dayMonth(date: string, withYear = false): string {
   const [y, m, d] = date.split('-');
-  return `${Number(d)} ${SHORT[Number(m) - 1]}${withYear ? ` ${y}` : ''}`;
+  // После числа месяц в родительном падеже: «29 мая», остальные сокращения и так подходят
+  return `${Number(d)} ${m === '05' ? 'мая' : SHORT[Number(m) - 1]}${withYear ? ` ${y}` : ''}`;
 }
 
 /** «5 октября 2026, пн»: подпись под полем даты. */

@@ -498,6 +498,11 @@ export function openDb(path: string): Db {
     // Расход, сопутствующий активу (агентские, нотариус, страховка): на стоимость актива не влияет, показывается у актива
     db.exec('ALTER TABLE entries ADD COLUMN pot_id INTEGER REFERENCES pots(id)');
   }
+  if (!all<{ name: string }>(db, 'PRAGMA table_info(entries)').some((c) => c.name === 'pot_units')) {
+    // Расход фонда, оплаченный из вклада в валюте или акциях (pot_id): сколько единиц продано на него.
+    // Продажа во вкладе следует за расходом (pot_moves.entry_id), её ставит syncInterest
+    db.exec('ALTER TABLE entries ADD COLUMN pot_units REAL');
+  }
   // Расход по активу может быть без фонда: проверка таблицы entries меняется пересозданием таблицы (в SQLite иначе нельзя)
   const entriesSql = get<{ sql: string }>(db, `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entries'`)!.sql;
   const OLD_CHECK = "(kind = 'expense' AND fund_id IS NOT NULL)";

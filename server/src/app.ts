@@ -73,8 +73,10 @@ const EntryBody = z.object({
   comment: Comment,
   paidBy: z.number().int().nullable().optional(),
   earnedBy: z.number().int().nullable().optional(),
-  /** Актив для сопутствующего расхода; не передан = не менять */
+  /** Актив для сопутствующего расхода или вклад в валюте/акциях, из которого оплачен расход фонда; не передан = не менять */
   potId: z.number().int().nullable().optional(),
+  /** Сколько единиц вклада potId (валюта, акции) продано на этот расход */
+  potUnits: z.number().finite().positive('Укажи, сколько продано из вклада').nullable().optional(),
   /** Операция подтверждает запланированный платёж */
   reminderId: z.number().int().optional(),
   /** Покупка, к которой относится возврат; не передан = не менять */
@@ -650,7 +652,7 @@ export function buildApp(options: AppOptions) {
     const sources = incomeSourceByEntry(db, ledgerId);
     const rows = all<{ tags: string; closed: number; amount: number; description: string; comment: string; fundName: string | null; paidByName: string | null; earnedByName: string | null; refundOf: string | null; refunded: number | null }>(
       db,
-      `SELECT e.id, e.date, e.kind, e.amount, e.fund_id fundId, f.name fundName, e.description, e.comment, e.paid_by paidBy, e.pot_id potId,
+      `SELECT e.id, e.date, e.kind, e.amount, e.fund_id fundId, f.name fundName, e.description, e.comment, e.paid_by paidBy, e.pot_id potId, e.pot_units potUnits,
          (SELECT name FROM pots WHERE id = e.pot_id) potName,
          m.display_name paidByName, e.created_by createdBy, e.earned_by earnedBy, em.display_name earnedByName, e.auto_credit autoCredit,
          EXISTS (SELECT 1 FROM closed_months c WHERE c.ledger_id = e.ledger_id AND c.ym = substr(e.date, 1, 7)) closed,
@@ -788,9 +790,19 @@ export function buildApp(options: AppOptions) {
       if (body.potId && !get(db, `SELECT 1 x FROM pots WHERE id = ? AND ledger_id = ? AND kind = 'cash'`, body.potId, ctx.ledgerId)) throw new DomainError('Вклад не найден', 404);
       return { ...body, fundId: null, paidBy: null, earnedBy, potId: body.potId, refundOf: null };
     }
-    if (body.potId && !get(db, `SELECT 1 x FROM pots WHERE id = ? AND ledger_id = ? AND kind = 'asset'`, body.potId, ctx.ledgerId)) {
-      throw new DomainError('Актив не найден', 404);
+    const potKind = body.potId ? get<{ kind: string }>(db, 'SELECT kind FROM pots WHERE id = ? AND ledger_id = ?', body.potId, ctx.ledgerId)?.kind : undefined;
+    // Расход фонда, оплаченный из вклада в валюте или акциях: во вкладе продаются эти единицы на сумму расхода
+    if (potKind === 'currency' || potKind === 'stock') {
+      if (!body.potUnits) throw new DomainError('Укажи, сколько продано из вклада.');
+      if (body.amount < 0) throw new DomainError('Возврат нельзя оплатить из вклада.');
+      if (!body.fundId || !usableFund(ctx.ledgerId, body.fundId, keepFundId)) throw new DomainError('Выбери фонд.');
+      let paidBy = ctx.isAdmin ? (body.paidBy ?? null) : ctx.userId;
+      if (paidBy !== null && !get(db, 'SELECT 1 x FROM members WHERE ledger_id = ? AND user_id = ? AND inactive_at IS NULL', ctx.ledgerId, paidBy)) {
+        throw new DomainError('Участник не найден', 404);
+      }
+      return { ...body, paidBy, earnedBy: null };
     }
+    if (body.potId && potKind !== 'asset') throw new DomainError('Актив не найден', 404);
     // Расход по активу (агентские, нотариус) может идти без фонда: тогда он списывается прямо из свободных
     const assetOnly = !body.fundId && !!body.potId;
     if (!assetOnly && (!body.fundId || !usableFund(ctx.ledgerId, body.fundId, keepFundId))) {
@@ -801,7 +813,21 @@ export function buildApp(options: AppOptions) {
     if (paidBy !== null && !get(db, 'SELECT 1 x FROM members WHERE ledger_id = ? AND user_id = ? AND inactive_at IS NULL', ctx.ledgerId, paidBy)) {
       throw new DomainError('Участник не найден', 404);
     }
-    return { ...body, fundId: assetOnly ? null : body.fundId, paidBy, earnedBy: null };
+    return { ...body, fundId: assetOnly ? null : body.fundId, paidBy, earnedBy: null, potUnits: body.potId === undefined ? undefined : null };
+  }
+
+  /** Во вкладе на дату расхода должно хватать единиц; except: расход, чья продажа уже есть (правка) */
+  function checkPotUnits(potId: number | null | undefined, units: number | null | undefined, date: string, except: number | null) {
+    if (!potId || !units) return;
+    const held = get<{ u: number }>(
+      db,
+      `SELECT opening_units + COALESCE((SELECT SUM(m.units) FROM pot_moves m WHERE m.pot_id = pots.id AND m.inactive_at IS NULL AND m.date <= ? AND (? IS NULL OR m.entry_id IS NULL OR m.entry_id <> ?)), 0) u, name FROM pots WHERE id = ?`,
+      date,
+      except,
+      except,
+      potId,
+    ) as { u: number; name: string };
+    if (held.u + 1e-9 < units) throw new DomainError(`На эту дату во вкладе «${held.name}» только ${Math.round(held.u * 100) / 100}.`);
   }
 
   app.post(`${L}/entries`, async (req) => {
@@ -810,12 +836,13 @@ export function buildApp(options: AppOptions) {
     writable(ctx, body.date, body.recalc);
     const e = normalizeEntry(ctx, body);
     checkRefund(db, ctx, null, e.refundOf ?? null, e.kind, e.amount);
+    checkPotUnits(e.potId, e.potUnits, e.date, null);
     const id = tx(db, () => {
       const entryId = Number(
         run(
           db,
-          `INSERT INTO entries (ledger_id, date, kind, amount, fund_id, description, comment, paid_by, earned_by, pot_id, refund_of, created_by)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO entries (ledger_id, date, kind, amount, fund_id, description, comment, paid_by, earned_by, pot_id, refund_of, pot_units, created_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           ctx.ledgerId,
           e.date,
           e.kind,
@@ -827,6 +854,7 @@ export function buildApp(options: AppOptions) {
           e.earnedBy,
           e.potId ?? null,
           e.refundOf ?? null,
+          e.potUnits ?? null,
           ctx.userId,
         ).lastInsertRowid,
       );
@@ -861,7 +889,9 @@ export function buildApp(options: AppOptions) {
     const before = snapshot(db, 'entry', id) as EntryState;
     const potId = e.potId === undefined ? (before.potId ?? null) : e.potId;
     const refundOf = e.refundOf === undefined ? (before.refundOf ?? null) : e.refundOf;
-    const after: EntryState = { ...before, date: e.date, kind: e.kind, amount: e.amount, fundId: e.fundId ?? null, paidBy: e.paidBy, earnedBy: e.earnedBy, potId, tags: e.tags ?? before.tags };
+    const potUnits = e.potUnits === undefined ? (before.potUnits ?? null) : e.potUnits;
+    const { potUnits: _units, ...rest } = before;
+    const after: EntryState = { ...rest, date: e.date, kind: e.kind, amount: e.amount, fundId: e.fundId ?? null, paidBy: e.paidBy, earnedBy: e.earnedBy, potId, ...(potUnits ? { potUnits } : {}), tags: e.tags ?? before.tags };
     // Описание, комментарий и привязку возврата можно поправить и в закрытом месяце без пересчёта: итоги от них не меняются
     if (affectsTotals(before, after)) {
       writable(ctx, old.date, body.recalc);
@@ -869,10 +899,11 @@ export function buildApp(options: AppOptions) {
     }
     checkRefund(db, ctx, id, refundOf, e.kind, e.amount);
     checkRefunded(db, ctx.ledgerId, id, e.kind, e.amount);
+    checkPotUnits(potId, potUnits, e.date, id);
     tx(db, () => {
       run(
         db,
-        'UPDATE entries SET date = ?, kind = ?, amount = ?, fund_id = ?, description = ?, comment = ?, paid_by = ?, earned_by = ?, pot_id = ?, refund_of = ? WHERE id = ?',
+        'UPDATE entries SET date = ?, kind = ?, amount = ?, fund_id = ?, description = ?, comment = ?, paid_by = ?, earned_by = ?, pot_id = ?, refund_of = ?, pot_units = ? WHERE id = ?',
         e.date,
         e.kind,
         e.amount,
@@ -883,6 +914,7 @@ export function buildApp(options: AppOptions) {
         e.earnedBy,
         potId,
         refundOf,
+        potUnits,
         id,
       );
       if (e.tags) setEntryTags(db, ctx.ledgerId, id, e.tags);

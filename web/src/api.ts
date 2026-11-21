@@ -244,6 +244,8 @@ export interface Entry {
   /** Актив, к которому относится расход */
   potId: number | null;
   potName?: string | null;
+  /** Расход фонда оплачен из вклада в валюте или акциях potId: сколько единиц продано */
+  potUnits?: number | null;
   description: string;
   comment: string;
   paidBy: number | null;

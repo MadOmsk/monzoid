@@ -910,7 +910,7 @@ function Deals({ base, pot, moves, unit, isAdmin, onOpenPot, onChanged }: {
               <span>
                 {shortDate(m.date)}{m.comment && ` · ${m.comment}`}
                 {m.toPotId && ` · деньги во вклад «${cashPots.find((p) => p.id === m.toPotId)?.name ?? '…'}»`}
-                {m.linked && (m.salePotId ? ' · по продаже актива, меняется в его карточке' : ' · проценты, меняются в операции дохода')}
+                {m.linked && (m.salePotId ? ' · по продаже актива, меняется в его карточке' : m.units !== 0 ? ' · оплата расхода, меняется в операции' : ' · проценты, меняются в операции дохода')}
               </span>
               {counted && m.units !== 0 && <span>{amount(Math.abs(m.units), 4)}{m.price !== null && ` по ${amount(m.price)} ${unit}`}</span>}
             </div>
@@ -921,6 +921,7 @@ function Deals({ base, pot, moves, unit, isAdmin, onOpenPot, onChanged }: {
             <li key={m.id}>
               <div className="static">
                 {body}
+                <div className="stack deal-edit">
                 {error && <Banner kind="error">{error}</Banner>}
                 <div className="field">
                   <span>Дата сделки</span>
@@ -970,6 +971,7 @@ function Deals({ base, pot, moves, unit, isAdmin, onOpenPot, onChanged }: {
                   <Button small onClick={() => save(m)}>Сохранить</Button>
                   <Button small onClick={() => remove(m)}>Убрать</Button>
                   <Button small onClick={() => setEditing(null)}>Отмена</Button>
+                </div>
                 </div>
               </div>
             </li>
