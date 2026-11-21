@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, ApiError, confirmAction, useLoad, withRecalc, type AssetValue, type Entry, type MarketPrice, type MonthReport, type Pot, type PotQuotes } from './api';
 import { confirmLeave, useBack } from './back';
 import { EntryForm } from './entries';
@@ -96,7 +96,14 @@ function useDepositForm(optional = false) {
       )}
     </>
   );
-  return { load, body, fields };
+  const reset = () => {
+    setRate('');
+    setPayout('month');
+    setFrom(today());
+    setDay('');
+    setFirst('');
+  };
+  return { load, reset, body, fields };
 }
 
 function shortDate(date: string): string {
@@ -1243,6 +1250,10 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
   const [pot, setPot] = useState<number | ''>('');
   const selected = pots.find((p) => p.id === pot);
   const deposit = useDepositForm(true);
+  // После создания форма закрывается и очищается, а сверху остаётся сообщение
+  const createRef = useRef<HTMLDetailsElement>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [created, setCreated] = useState<string | null>(null);
 
   async function run(fn: () => Promise<unknown>) {
     try {
@@ -1259,21 +1270,31 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
   async function create() {
     const balance = openingBalance.trim() ? parseMoney(openingBalance) : 0;
     const count = kind !== 'cash' && kind !== 'asset' && openingUnits.trim() ? parseUnits(openingUnits) : 0;
-    if (balance === null || count === null) return setError('Проверь стартовые суммы.');
+    if (!name.trim()) return setCreateError('Укажи название.');
+    if (balance === null || count === null) return setCreateError('Проверь стартовые суммы.');
     const rate = kind === 'cash' ? deposit.body() : null;
-    if (typeof rate === 'string') return setError(rate);
+    if (typeof rate === 'string') return setCreateError(rate);
     const body = { name, kind, openingBalance: balance, openingUnits: count, ...(kind === 'currency' ? { currency } : {}), ...(kind === 'stock' ? { ticker } : {}), ...(rate ?? {}) };
-    if (await run(() => api.post(`${base}/pots`, body))) {
-      setName('');
-      setTicker('');
-      setOpeningBalance('');
-      setOpeningUnits('');
+    try {
+      await api.post(`${base}/pots`, body);
+    } catch (e) {
+      return setCreateError((e as Error).message);
     }
+    setCreateError(null);
+    setCreated(name.trim());
+    setName('');
+    setTicker('');
+    setOpeningBalance('');
+    setOpeningUnits('');
+    deposit.reset();
+    if (createRef.current) createRef.current.open = false;
+    await onChanged();
   }
 
   return (
     <>
       {error && <Banner kind="error">{error}</Banner>}
+      {created && <Banner kind="ok">Создан вклад «{created}», он в списке выше.</Banner>}
       {tab !== 'stock' && pots.length > 0 && (
         <details className="section">
           <summary>{tab === 'currency' ? 'Купить или продать валюту' : tab === 'cash' ? 'Положить или забрать' : 'Купить или продать актив'}</summary>
@@ -1289,7 +1310,7 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
           </div>
         </details>
       )}
-      <details className="section">
+      <details className="section" ref={createRef} onToggle={(e) => { if (e.currentTarget.open) setCreated(null); }}>
         <summary>{{ currency: 'Новый вклад в валюте', stock: 'Новые акции', cash: 'Новый депозит', asset: 'Новый актив' }[tab]}</summary>
         <div className="section-body">
           {tab === 'cash' && <p className="muted small">Депозит, накопительный счёт или просто отложенные деньги в основной валюте. Если есть ставка, проценты посчитаются сами и будут ждать подтверждения.</p>}
@@ -1312,6 +1333,7 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
           </div>
           {kind === 'cash' && deposit.fields}
           <p className="muted small">{kind === 'asset' ? 'Уже имеющийся актив входит в общий итог с первого месяца базы и не списывается со свободных средств. Новый заводится без суммы, а потом покупается переводом.' : kind === 'cash' ? 'Сумма, которая уже лежала на старте учёта. Она не списывается со свободных средств, но входит в общий итог.' : `Заполни, только если ${kind === 'stock' ? 'акции были' : 'валюта была'} до начала учёта: «Есть» это сколько у тебя сейчас, «Заплачено» сколько ${symbol()} ты за это отдал, от этого считается доход. Со свободных средств это не списывается. Если будешь покупать в приложении, оставь поля пустыми.`}</p>
+          {createError && <Banner kind="error">{createError}</Banner>}
           <Button small onClick={create}>Создать</Button>
         </div>
       </details>

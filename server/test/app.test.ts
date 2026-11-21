@@ -735,6 +735,17 @@ describe('основная валюта и копилки', () => {
     expect(nextInterest(db, id, '2024-02-20')).toMatchObject({ due: { to: '2024-01-25' } });
     await call('POST', `${base}/pots/${id}/interest`, { to: '2024-01-25' });
     expect(nextInterest(db, id, '2024-02-20')).toEqual({ due: null, remind: false, next: '2024-02-25' });
+    // Пополнение и снятие внутри периода: деньги приносят проценты со следующего дня после операции
+    const topped = (await call('POST', `${base}/pots`, { name: 'С пополнением', kind: 'cash', openingBalance: k(1_000_000), rate: 12, payout: 'month', rateFrom: '2024-01-10' })).body.id;
+    await call('POST', `${base}/pots/${topped}/moves`, { date: '2024-01-20', amount: k(500_000), units: 0, comment: '' });
+    await call('POST', `${base}/pots/${topped}/moves`, { date: '2024-02-01', amount: -k(200_000), units: 0, comment: '' });
+    // 11–20 янв: 1 000 000 (10 дней); 21 янв – 1 фев: 1 500 000 (12 дней); 2–10 фев: 1 300 000 (9 дней)
+    const perDay = (sum: number) => (sum * 12) / 100 / 365;
+    expect(nextInterest(db, topped, '2024-02-10').due).toEqual({
+      from: '2024-01-10',
+      to: '2024-02-10',
+      amount: Math.round(perDay(k(1_000_000)) * 10 + perDay(k(1_500_000)) * 12 + perDay(k(1_300_000)) * 9),
+    });
     // Квартальное начисление: от первой выплаты каждые три месяца
     await call('PATCH', `${base}/pots/${id}`, { payout: 'quarter' });
     expect(nextInterest(db, id, '2024-02-20')).toEqual({ due: null, remind: false, next: '2024-04-25' });
