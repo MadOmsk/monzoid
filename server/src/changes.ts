@@ -21,8 +21,6 @@ export interface EntryState {
   potId?: number | null;
   /** Покупка, к которой привязан возврат. В снимке только если есть: так старые записи журнала совпадают с текущим состоянием */
   refundOf?: number;
-  /** Сколько единиц вклада potId продано на этот расход; в снимке только если есть */
-  potUnits?: number;
   tags: string[];
 }
 
@@ -31,7 +29,7 @@ export interface EntryState {
  * Описание, комментарий и привязка возврата на расчёты не влияют, для них согласие на пересчёт закрытого месяца не нужно.
  */
 export function affectsTotals(before: EntryState, after: EntryState): boolean {
-  const key = (s: EntryState) => JSON.stringify([s.date, s.kind, s.amount, s.fundId, s.potId ?? null, s.potUnits ?? null, s.paidBy, s.earnedBy, normalizeTags(s.tags).sort()]);
+  const key = (s: EntryState) => JSON.stringify([s.date, s.kind, s.amount, s.fundId, s.potId ?? null, s.paidBy, s.earnedBy, normalizeTags(s.tags).sort()]);
   return key(before) !== key(after);
 }
 
@@ -89,14 +87,14 @@ function tagNames(db: Db, table: 'entry_tags' | 'adjustment_tags', column: strin
 /** Состояние записи; null, если её нет или она удалена. */
 export function snapshot(db: Db, kind: ChangeKind, id: number): State | null {
   if (kind === 'entry') {
-    const row = get<Omit<EntryState, 'tags' | 'refundOf' | 'potUnits'> & { refundOf: number | null; potUnits: number | null }>(
+    const row = get<Omit<EntryState, 'tags' | 'refundOf'> & { refundOf: number | null }>(
       db,
-      `SELECT date, kind, amount, fund_id fundId, description, comment, paid_by paidBy, earned_by earnedBy, pot_id potId, refund_of refundOf, pot_units potUnits FROM entries WHERE id = ? AND inactive_at IS NULL`,
+      `SELECT date, kind, amount, fund_id fundId, description, comment, paid_by paidBy, earned_by earnedBy, pot_id potId, refund_of refundOf FROM entries WHERE id = ? AND inactive_at IS NULL`,
       id,
     );
     if (!row) return null;
-    const { refundOf, potUnits, ...rest } = row;
-    return { ...rest, ...(refundOf ? { refundOf } : {}), ...(potUnits ? { potUnits } : {}), tags: tagNames(db, 'entry_tags', 'entry_id', id) };
+    const { refundOf, ...rest } = row;
+    return { ...rest, ...(refundOf ? { refundOf } : {}), tags: tagNames(db, 'entry_tags', 'entry_id', id) };
   }
   if (kind === 'transfer') {
     const row = get<Omit<TransferState, 'tags'>>(db, 'SELECT date, amount, comment, from_fund_id fromFundId, to_fund_id toFundId FROM fund_transfers WHERE id = ? AND inactive_at IS NULL', id);
@@ -170,7 +168,7 @@ function restore(db: Db, ledgerId: number, kind: ChangeKind, id: number, state: 
     const s = state as EntryState;
     run(
       db,
-      'UPDATE entries SET date = ?, kind = ?, amount = ?, fund_id = ?, description = ?, comment = ?, paid_by = ?, earned_by = ?, pot_id = ?, refund_of = ?, pot_units = ?, inactive_at = NULL WHERE id = ?',
+      'UPDATE entries SET date = ?, kind = ?, amount = ?, fund_id = ?, description = ?, comment = ?, paid_by = ?, earned_by = ?, pot_id = ?, refund_of = ?, inactive_at = NULL WHERE id = ?',
       s.date,
       s.kind,
       s.amount,
@@ -181,7 +179,6 @@ function restore(db: Db, ledgerId: number, kind: ChangeKind, id: number, state: 
       s.earnedBy,
       s.potId ?? null,
       s.refundOf ?? null,
-      s.potUnits ?? null,
       id,
     );
     setEntryTags(db, ledgerId, id, s.tags);

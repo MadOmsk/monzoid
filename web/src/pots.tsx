@@ -319,6 +319,11 @@ function PotDetail({ base, pot, isAdmin, onChanged, onBack, onOpenPot }: { base:
   const first = points[0];
   const last = points[points.length - 1];
   const unit = data ? symbol(data.currency) : '';
+  // Правка сделки открывается отдельным экраном поверх карточки
+  const [deal, setDeal] = useState<Move | null>(null);
+  useBack(!!deal, 3, () => setDeal(null));
+  const dealsChanged = async () => { await Promise.all([reload(), onChanged()]); };
+  if (deal) return <DealEditor base={base} pot={pot} move={deal} unit={unit} onClose={() => setDeal(null)} onChanged={dealsChanged} />;
 
   return (
     <>
@@ -378,7 +383,7 @@ function PotDetail({ base, pot, isAdmin, onChanged, onBack, onOpenPot }: { base:
             ? <StockTrade base={base} pots={[pot]} fixed={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />
             : <PotMove base={base} pot={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />)}
           <h2>История</h2>
-          <Deals base={base} pot={pot} moves={data.moves} unit={unit} isAdmin={isAdmin} onOpenPot={onOpenPot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />
+          <Deals base={base} pot={pot} moves={data.moves} unit={unit} isAdmin={isAdmin} onOpenPot={onOpenPot} onEdit={setDeal} />
         </>
       )}
     </>
@@ -409,6 +414,8 @@ function AssetDetail({ base, pot, isAdmin, userId, ym, onChanged, onBack }: { ba
   // Форма расхода по этому активу открывается поверх карточки: новый расход или правка существующего
   const [form, setForm] = useState<{ entry?: Entry } | null>(null);
   useBack(!!form, 3, async () => { if (await confirmLeave()) setForm(null); });
+  const [deal, setDeal] = useState<Move | null>(null);
+  useBack(!!deal, 3, () => setDeal(null));
 
   /** Полная операция для формы правки берётся из списка операций её месяца. */
   async function openExpense(id: number, date: string) {
@@ -456,6 +463,7 @@ function AssetDetail({ base, pot, isAdmin, userId, ym, onChanged, onBack }: { ba
     };
     return <EntryForm base={base} ym={ym} userId={userId} isAdmin={isAdmin} entry={form.entry} fundId={null} potId={pot.id} onClose={close} />;
   }
+  if (deal) return <DealEditor base={base} pot={pot} move={deal} unit={symbol()} onClose={() => setDeal(null)} onChanged={dealsChanged} />;
 
   return (
     <>
@@ -531,7 +539,7 @@ function AssetDetail({ base, pot, isAdmin, userId, ym, onChanged, onBack }: { ba
       {deals.error && <Banner kind="error">{deals.error}</Banner>}
       {deals.data?.moves.length === 0 && <p className="muted">Сделок нет: актив был до начала учёта.</p>}
       {!!deals.data?.moves.length && <h2>История сделок</h2>}
-      {!!deals.data?.moves.length && <Deals base={base} pot={pot} moves={deals.data.moves} unit={symbol()} isAdmin={isAdmin} onChanged={dealsChanged} />}
+      {!!deals.data?.moves.length && <Deals base={base} pot={pot} moves={deals.data.moves} unit={symbol()} isAdmin={isAdmin} onEdit={setDeal} />}
     </>
   );
 }
@@ -829,7 +837,10 @@ function stockSumHint(count: string, price: string, priceIn: 'stock' | 'base', f
   return `Сумма: ${amount(units * each)} ${symbol(currency)}, в ${symbol()} пересчитается по курсу Нацбанка на дату сделки`;
 }
 
-function Deals({ base, pot, moves, unit, isAdmin, onOpenPot, onChanged }: {
+type Move = PotQuotes['moves'][number];
+
+/** История сделок вклада. Нажатие на сделку открывает её правку отдельным экраном (onEdit). */
+function Deals({ base, pot, moves, unit, isAdmin, onOpenPot, onEdit }: {
   base: string;
   pot: Pot;
   moves: PotQuotes['moves'];
@@ -837,37 +848,57 @@ function Deals({ base, pot, moves, unit, isAdmin, onOpenPot, onChanged }: {
   isAdmin: boolean;
   /** Открыть другой вклад: запись по продаже актива меняется в карточке этого актива */
   onOpenPot?: (id: number) => void;
-  onChanged: () => Promise<void>;
+  onEdit: (m: Move) => void;
 }) {
-  const [editing, setEditing] = useState<number | null>(null);
-  const [date, setDate] = useState('');
-  const [sum, setSum] = useState('');
-  const [count, setCount] = useState('');
-  const [comment, setComment] = useState('');
-  const [price, setPrice] = useState('');
+  const cashPots = (useLoad<Pot[]>(pot.kind === 'asset' ? `${base}/pots` : null).data ?? []).filter((p) => p.kind === 'cash');
+  const counted = pot.kind === 'currency' || pot.kind === 'stock';
+  if (!moves.length) return <p className="muted">{pot.kind === 'asset' ? 'Сделок нет: актив был до начала учёта.' : 'Сделок пока нет.'}</p>;
+  return (
+    <ul className="tag-rank">
+      {[...moves].reverse().map((m) => {
+        const body = <DealSummary pot={pot} m={m} unit={unit} counted={counted} cashPots={cashPots} />;
+        // Запись по продаже актива правится через продажу и расходы в карточке актива
+        if (m.linked && m.salePotId && onOpenPot) return <li key={m.id}><button type="button" onClick={() => onOpenPot(m.salePotId!)}>{body}</button></li>;
+        return <li key={m.id}>{isAdmin && !m.linked ? <button type="button" onClick={() => onEdit(m)}>{body}</button> : <div className="static">{body}</div>}</li>;
+      })}
+    </ul>
+  );
+}
+
+function DealSummary({ pot, m, unit, counted, cashPots }: { pot: Pot; m: Move; unit: string; counted: boolean; cashPots: Pot[] }) {
+  return (
+    <>
+      <div className="fund-top"><span className="entry-title">{dealTitle(pot, m)}</span><b>{signed(m.amount)}</b></div>
+      <div className="fund-bottom muted small">
+        <span>
+          {shortDate(m.date)}{m.comment && ` · ${m.comment}`}
+          {m.toPotId && ` · деньги во вклад «${cashPots.find((p) => p.id === m.toPotId)?.name ?? '…'}»`}
+          {m.linked && (m.salePotId ? ' · по продаже актива, меняется в его карточке' : ' · проценты, меняются в операции дохода')}
+        </span>
+        {counted && m.units !== 0 && <span>{amount(Math.abs(m.units), 4)}{m.price !== null && ` по ${amount(m.price)} ${unit}`}</span>}
+      </div>
+    </>
+  );
+}
+
+/** Правка сделки отдельным экраном: дата, количество, сумма или цена, куда деньги от продажи актива, комментарий. */
+function DealEditor({ base, pot, move: m, unit, onClose, onChanged }: { base: string; pot: Pot; move: Move; unit: string; onClose: () => void; onChanged: () => Promise<void> }) {
+  const [date, setDate] = useState(m.date);
+  const [sum, setSum] = useState(toInput(Math.abs(m.amount)));
+  const [count, setCount] = useState(m.units ? String(Math.abs(m.units)).replace('.', ',') : '');
+  const [comment, setComment] = useState(m.comment);
+  const [price, setPrice] = useState(m.price !== null ? String(Math.round(m.price * 10000) / 10000).replace('.', ',') : '');
   const [priceIn, setPriceIn] = useState<'stock' | 'base'>('stock');
-  const [toPot, setToPot] = useState<number | ''>('');
+  const [toPot, setToPot] = useState<number | ''>(m.toPotId ?? '');
   const [error, setError] = useState<string | null>(null);
   // Вклады в основной валюте: куда продажа актива кладёт деньги
   const cashPots = (useLoad<Pot[]>(pot.kind === 'asset' ? `${base}/pots` : null).data ?? []).filter((p) => p.kind === 'cash');
-  const isSale = (m: PotQuotes['moves'][number]) => pot.kind === 'asset' && m.amount < 0;
+  const sale = pot.kind === 'asset' && m.amount < 0;
   const counted = pot.kind === 'currency' || pot.kind === 'stock';
   const stock = pot.kind === 'stock';
   const foreign = symbol(pot.currency) !== symbol();
 
-  function edit(m: PotQuotes['moves'][number]) {
-    setEditing(m.id);
-    setDate(m.date);
-    setSum(toInput(Math.abs(m.amount)));
-    setCount(m.units ? String(Math.abs(m.units)) : '');
-    setComment(m.comment);
-    setPrice(m.price !== null ? String(Math.round(m.price * 10000) / 10000).replace('.', ',') : '');
-    setPriceIn('stock');
-    setToPot(m.toPotId ?? '');
-    setError(null);
-  }
-
-  async function save(m: PotQuotes['moves'][number]) {
+  async function save() {
     const units = counted && count.trim() ? parseUnits(count) : 0;
     if (units === null) return setError('Проверь количество.');
     // У акций сумма считается на сервере по цене за штуку; у остального вводится сама сумма
@@ -879,109 +910,81 @@ function Deals({ base, pot, moves, unit, isAdmin, onOpenPot, onChanged }: {
     // Знак сделки сохраняется: что было покупкой или переводом во вклад, тем и остаётся
     const sign = m.amount < 0 ? -1 : 1;
     try {
-      const body = { date, amount: sign * value, units: counted ? sign * Math.abs(units) : m.units, comment, ...(stock ? { price: each, priceIn } : {}), ...(isSale(m) ? { toPotId: toPot || null } : {}) };
+      const body = { date, amount: sign * value, units: counted ? sign * Math.abs(units) : m.units, comment, ...(stock ? { price: each, priceIn } : {}), ...(sale ? { toPotId: toPot || null } : {}) };
       if ((await withRecalc((recalc) => api.put(`${base}/pots/${pot.id}/moves/${m.id}`, { ...body, recalc }))) === null) return;
-      setEditing(null);
       await onChanged();
+      onClose();
     } catch (e) {
       setError((e as Error).message);
     }
   }
 
-  async function remove(m: PotQuotes['moves'][number]) {
+  async function remove() {
     if (!(await confirmAction(`Убрать сделку «${dealTitle(pot, m)}» на ${money(Math.abs(m.amount))} от ${shortDate(m.date)}? Итоги пересчитаются.`))) return;
     try {
       if ((await withRecalc((recalc) => api.del(`${base}/pots/${pot.id}/moves/${m.id}${recalc ? '?recalc=1' : ''}`))) === null) return;
-      setEditing(null);
       await onChanged();
+      onClose();
     } catch (e) {
       setError((e as Error).message);
     }
   }
 
-  if (!moves.length) return <p className="muted">{pot.kind === 'asset' ? 'Сделок нет: актив был до начала учёта.' : 'Сделок пока нет.'}</p>;
   return (
-    <ul className="tag-rank">
-      {[...moves].reverse().map((m) => {
-        const body = (
-          <>
-            <div className="fund-top"><span className="entry-title">{dealTitle(pot, m)}</span><b>{signed(m.amount)}</b></div>
-            <div className="fund-bottom muted small">
-              <span>
-                {shortDate(m.date)}{m.comment && ` · ${m.comment}`}
-                {m.toPotId && ` · деньги во вклад «${cashPots.find((p) => p.id === m.toPotId)?.name ?? '…'}»`}
-                {m.linked && (m.salePotId ? ' · по продаже актива, меняется в его карточке' : m.units !== 0 ? ' · оплата расхода, меняется в операции' : ' · проценты, меняются в операции дохода')}
-              </span>
-              {counted && m.units !== 0 && <span>{amount(Math.abs(m.units), 4)}{m.price !== null && ` по ${amount(m.price)} ${unit}`}</span>}
-            </div>
-          </>
-        );
-        if (editing === m.id) {
-          return (
-            <li key={m.id}>
-              <div className="static">
-                {body}
-                <div className="stack deal-edit">
-                {error && <Banner kind="error">{error}</Banner>}
-                <div className="field">
-                  <span>Дата сделки</span>
-                  <DateInput label="Дата сделки" value={date} onChange={setDate} />
-                </div>
-                {counted && (
-                  <label className="field">
-                    <span>{stock ? 'Количество акций, шт.' : `Сумма в ${symbol(pot.currency)}`}</span>
-                    <input inputMode="decimal" value={count} onChange={(e) => setCount(numberInput(e.target.value, { decimals: 8 }))} />
-                  </label>
-                )}
-                {stock ? (
-                  <div className="field">
-                    <span>Цена за одну акцию</span>
-                    <div className="inline-form">
-                      <input aria-label="Цена за одну акцию" inputMode="decimal" value={price} onChange={(e) => setPrice(numberInput(e.target.value, { decimals: 6 }))} />
-                      {foreign && (
-                        <select aria-label="Валюта цены" value={priceIn} onChange={(e) => setPriceIn(e.target.value as 'stock' | 'base')}>
-                          <option value="stock">{symbol(pot.currency)}</option>
-                          <option value="base">{symbol()}</option>
-                        </select>
-                      )}
-                    </div>
-                    <small className="muted">{stockSumHint(count, price, priceIn, foreign, pot.currency)}</small>
-                  </div>
-                ) : (
-                  <label className="field">
-                    <span>Сумма в {symbol()}</span>
-                    <input inputMode="decimal" value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />
-                  </label>
-                )}
-                {isSale(m) && cashPots.length > 0 && (
-                  <label className="field">
-                    <span>Куда деньги</span>
-                    <select value={toPot} onChange={(e) => setToPot(e.target.value ? Number(e.target.value) : '')}>
-                      <option value="">В свободные средства</option>
-                      {cashPots.map((p) => <option key={p.id} value={p.id}>Во вклад «{p.name}»</option>)}
-                    </select>
-                    <small className="muted">Во вкладе: сумма продажи минус расходы по активу с даты продажи.</small>
-                  </label>
-                )}
-                <label className="field">
-                  <span>Комментарий</span>
-                  <input value={comment} onChange={(e) => setComment(e.target.value)} />
-                </label>
-                <div className="inline-form">
-                  <Button small onClick={() => save(m)}>Сохранить</Button>
-                  <Button small onClick={() => remove(m)}>Убрать</Button>
-                  <Button small onClick={() => setEditing(null)}>Отмена</Button>
-                </div>
-                </div>
-              </div>
-            </li>
-          );
-        }
-        // Запись по продаже актива правится через продажу и расходы в карточке актива
-        if (m.linked && m.salePotId && onOpenPot) return <li key={m.id}><button type="button" onClick={() => onOpenPot(m.salePotId!)}>{body}</button></li>;
-        return <li key={m.id}>{isAdmin && !m.linked ? <button type="button" onClick={() => edit(m)}>{body}</button> : <div className="static">{body}</div>}</li>;
-      })}
-    </ul>
+    <>
+      <Header title={dealTitle(pot, m)} onBack={onClose} />
+      <ul className="tag-rank"><li><div className="static"><DealSummary pot={pot} m={m} unit={unit} counted={counted} cashPots={cashPots} /></div></li></ul>
+      {error && <Banner kind="error">{error}</Banner>}
+      <div className="field">
+        <span>Дата сделки</span>
+        <DateInput label="Дата сделки" value={date} onChange={setDate} />
+      </div>
+      {counted && (
+        <label className="field">
+          <span>{stock ? 'Количество акций, шт.' : `Сумма в ${symbol(pot.currency)}`}</span>
+          <input inputMode="decimal" value={count} onChange={(e) => setCount(numberInput(e.target.value, { decimals: 8 }))} />
+        </label>
+      )}
+      {stock ? (
+        <div className="field">
+          <span>Цена за одну акцию</span>
+          <div className="inline-form">
+            <input aria-label="Цена за одну акцию" inputMode="decimal" value={price} onChange={(e) => setPrice(numberInput(e.target.value, { decimals: 6 }))} />
+            {foreign && (
+              <select aria-label="Валюта цены" value={priceIn} onChange={(e) => setPriceIn(e.target.value as 'stock' | 'base')}>
+                <option value="stock">{symbol(pot.currency)}</option>
+                <option value="base">{symbol()}</option>
+              </select>
+            )}
+          </div>
+          <small className="muted">{stockSumHint(count, price, priceIn, foreign, pot.currency)}</small>
+        </div>
+      ) : (
+        <label className="field">
+          <span>Сумма в {symbol()}</span>
+          <input inputMode="decimal" value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />
+        </label>
+      )}
+      {sale && cashPots.length > 0 && (
+        <label className="field">
+          <span>Куда деньги</span>
+          <select value={toPot} onChange={(e) => setToPot(e.target.value ? Number(e.target.value) : '')}>
+            <option value="">В свободные средства</option>
+            {cashPots.map((p) => <option key={p.id} value={p.id}>Во вклад «{p.name}»</option>)}
+          </select>
+          <small className="muted">Во вкладе: сумма продажи минус расходы по активу с даты продажи.</small>
+        </label>
+      )}
+      <label className="field">
+        <span>Комментарий</span>
+        <input value={comment} onChange={(e) => setComment(e.target.value)} />
+      </label>
+      <div className="stack">
+        <Button primary onClick={save}>Сохранить</Button>
+        <Button danger onClick={remove}>Убрать сделку</Button>
+        <Button onClick={onClose}>Отмена</Button>
+      </div>
+    </>
   );
 }
 

@@ -523,41 +523,34 @@ describe('основная валюта и копилки', () => {
     expect((await call('GET', `${base}/summary?ym=2026-10`)).body.report).toMatchObject({ potsAfter: k(25000), potsInvested: k(22500) });
   });
 
-  it('расход фонда, оплаченный из валютного вклада: во вкладе продажа, свободные получают столько же', async () => {
+  it('расход, оплаченный валютой из вклада: продажа валюты и расход двумя отдельными записями', async () => {
     const { db, call } = start();
     await refreshMarket(db, market(), '2026-11-02');
     const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2026-10' })).body.id}`;
     const fund = (await call('POST', `${base}/funds`, { name: 'Курсы' })).body.id;
     const usd = (await call('POST', `${base}/pots`, { name: 'Доллары', kind: 'currency', currency: 'USD', openingBalance: k(45000), openingUnits: 100 })).body.id;
+    const pay = (over: object) => call('POST', `${base}/entries`, { date: '2026-10-09', kind: 'expense', amount: k(10000), fundId: fund, comment: 'Курс', sellFrom: { potId: usd, units: 20 }, ...over });
     const before = (await call('GET', `${base}/summary?ym=2026-10`)).body.report;
 
-    // Без количества и больше, чем есть, нельзя; возврат из вклада тоже нельзя
-    expect((await call('POST', `${base}/entries`, { date: '2026-10-09', kind: 'expense', amount: k(10000), fundId: fund, potId: usd })).status).toBe(400);
-    expect((await call('POST', `${base}/entries`, { date: '2026-10-09', kind: 'expense', amount: k(10000), fundId: fund, potId: usd, potUnits: 101 })).status).toBe(400);
-    expect((await call('POST', `${base}/entries`, { date: '2026-10-09', kind: 'expense', amount: -k(10000), fundId: fund, potId: usd, potUnits: 20 })).status).toBe(400);
+    // Больше, чем есть, нельзя; возврат и расход без фонда из вклада тоже нельзя
+    expect((await pay({ sellFrom: { potId: usd, units: 101 } })).status).toBe(400);
+    expect((await pay({ amount: -k(10000) })).status).toBe(400);
+    expect((await call('GET', `${base}/entries?ym=2026-10`)).body).toEqual([]);
 
-    const id = (await call('POST', `${base}/entries`, { date: '2026-10-09', kind: 'expense', amount: k(10000), fundId: fund, potId: usd, potUnits: 20, comment: 'Курс' })).body.id;
+    const res = await pay({});
+    expect(res.status).toBe(200);
+    // Обе записи в журнале изменений, каждую можно отменить
+    expect((await call('GET', `${base}/changes`)).body.slice(0, 2).map((c: any) => c.kind).sort()).toEqual(['entry', 'pot_move']);
     const pot = async () => (await call('GET', `${base}/pots`)).body.find((p: any) => p.id === usd);
     expect(await pot()).toMatchObject({ units: 80, balance: k(35000) });
+    const moves = (await call('GET', `${base}/pots/${usd}/quotes`)).body.moves;
+    expect(moves.at(-1)).toMatchObject({ date: '2026-10-09', amount: -k(10000), units: -20, comment: 'Оплата: Курсы, Курс', linked: false });
     const after = (await call('GET', `${base}/summary?ym=2026-10`)).body.report;
     expect(after.freeAfter - before.freeAfter).toBe(k(10000));
-    expect(after.potsInvested - before.potsInvested).toBe(-k(10000));
-    const listed = (await call('GET', `${base}/entries?ym=2026-10`)).body;
-    expect(listed.find((e: any) => e.id === id)).toMatchObject({ potId: usd, potUnits: 20, fundId: fund });
 
-    // Правка расхода двигает продажу, снятая галочка убирает её
-    await call('PUT', `${base}/entries/${id}`, { date: '2026-10-10', kind: 'expense', amount: k(12000), fundId: fund, potId: usd, potUnits: 25 });
-    expect(await pot()).toMatchObject({ units: 75, balance: k(33000) });
-    expect((await call('PUT', `${base}/entries/${id}`, { date: '2026-10-10', kind: 'expense', amount: k(12000), fundId: fund, potId: usd, potUnits: 101 })).status).toBe(400);
-    await call('PUT', `${base}/entries/${id}`, { date: '2026-10-10', kind: 'expense', amount: k(12000), fundId: fund, potId: null });
-    expect(await pot()).toMatchObject({ units: 100, balance: k(45000) });
-
-    // Отмена правки возвращает продажу, удаление расхода снимает её
-    const change = (await call('GET', `${base}/changes`)).body[0];
-    expect((await call('POST', `${base}/changes/${change.id}/revert`)).status).toBe(200);
-    expect(await pot()).toMatchObject({ units: 75, balance: k(33000) });
-    await call('DELETE', `${base}/entries/${id}`);
-    expect(await pot()).toMatchObject({ units: 100, balance: k(45000) });
+    // Записи независимые: удаление расхода продажу не трогает
+    await call('DELETE', `${base}/entries/${res.body.id}`);
+    expect(await pot()).toMatchObject({ units: 80 });
   });
 
   it('проданная до нуля валюта стоит 0, разница покупки и продажи остаётся доходом или убытком', async () => {
@@ -2232,9 +2225,9 @@ describe('сопутствующие расходы актива', () => {
     expect(pot.value).toBe(k(30000));
     await call(1, 'PUT', `${base}/entries/${body.id}`, { ...fee, potId: null });
     expect((await call(1, 'GET', `${base}/pots/${flat}/expenses`)).body).toEqual([]);
-    // Вклад в валюте без количества проданного привязать нельзя
+    // Не актив привязать нельзя
     const usd = (await call(1, 'POST', `${base}/pots`, { name: 'Доллары', kind: 'currency', currency: 'USD', openingBalance: k(100), openingUnits: 1 })).body.id;
-    expect((await call(1, 'POST', `${base}/entries`, { ...fee, potId: usd })).status).toBe(400);
+    expect((await call(1, 'POST', `${base}/entries`, { ...fee, potId: usd })).status).toBe(404);
   });
 });
 

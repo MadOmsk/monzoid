@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { RemindersBlock, type Reminder } from './reminders';
-import { api, confirmAction, useLoad, withRecalc, type Entry, type Fund, type Member, type Pot, type PotQuotes, type Refundable, type Tag } from './api';
+import { api, confirmAction, useLoad, withRecalc, type Entry, type Fund, type MarketPrice, type Member, type Pot, type PotQuotes, type Refundable, type Tag } from './api';
+import { FxFields, useFx } from './fx';
 import { leaveForm, useBack, useUnsaved } from './back';
-import { amount as units, numberInput, dayMonth, defaultDate, fundLabel, memberLabel, money, parseMoney, parseUnits, monthShort, shiftYm, signed, symbol } from './format';
+import { amount as units, numberInput, dayMonth, defaultDate, fundLabel, memberLabel, money, parseMoney, monthShort, shiftYm, signed, symbol } from './format';
 import { TagPicker } from './tags';
 import { Banner, Button, DateInput, Field, FundTiles, Header, MonthNav, Segmented, Spinner } from './ui';
 
@@ -325,8 +326,7 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
           const note = e.comment || e.description;
           const refund = e.refundOf ? `возврат за «${e.refundOf.note || 'покупку'}» от ${dayMonth(e.refundOf.date, true)}` : e.amount < 0 && 'возврат';
           const returned = e.refunded > 0 && (e.refunded >= e.amount ? 'возвращено полностью' : `возвращено ${money(e.refunded)} из ${money(e.amount)}`);
-          const fromPot = e.potUnits && e.potName ? `из вклада «${e.potName}»` : null;
-          const extra = [fromPot, refund, returned, e.paidByName && `платил(а): ${memberLabel(e.paidByName)}`, memberLabel(e.earnedByName)].filter(Boolean).join(' · ');
+          const extra = [refund, returned, e.paidByName && `платил(а): ${memberLabel(e.paidByName)}`, memberLabel(e.earnedByName)].filter(Boolean).join(' · ');
           const checked = !!selected?.has(e.id);
           const body = (
             <>
@@ -510,17 +510,20 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
   const [date, setDate] = useState(entry?.date ?? reminder?.dueDate ?? defaultDate(ym));
   const [comment, setComment] = useState(entry?.comment ?? reminder?.comment ?? '');
   const [paidBy, setPaidBy] = useState<number | ''>(entry?.paidBy ?? '');
-  const [pot, setPot] = useState<number | ''>(entry?.potUnits ? '' : (entry?.potId ?? potId ?? ''));
-  // Расход фонда, оплаченный из вклада в валюте или акциях: во вкладе продаются эти единицы на сумму расхода
-  const [fromPot, setFromPot] = useState<number | ''>(entry?.potUnits ? (entry.potId ?? '') : '');
-  const [potUnits, setPotUnits] = useState(entry?.potUnits ? String(entry.potUnits).replace('.', ',') : '');
-  const [paidFromPot, setPaidFromPot] = useState(!!entry?.potUnits);
+  const [pot, setPot] = useState<number | ''>(entry?.potId ?? potId ?? '');
   // Активы для сопутствующих расходов; проданные тоже, чтобы видеть старые привязки
   const { data: pots } = useLoad<Pot[]>(`${base}/pots`);
   const assets = (pots ?? []).filter((p) => p.kind === 'asset');
-  const foreignPots = (pots ?? []).filter((p) => (p.kind === 'currency' || p.kind === 'stock') && (p.units > 0 || p.id === fromPot));
-  const payPot = foreignPots.find((p) => p.id === fromPot);
-  const canPayFromPot = kind === 'expense' && fund !== '' && fund !== ASSET && foreignPots.length > 0;
+  // Новый расход фонда, оплаченный валютой из вклада: вместе с ним записывается продажа этой валюты.
+  // Сумма, курс и количество валюты: два задаются, третье считается; курс по умолчанию Нацбанка на дату
+  const [paidFromPot, setPaidFromPot] = useState(false);
+  const [fromPot, setFromPot] = useState<number | ''>('');
+  const currencyPots = (pots ?? []).filter((p) => p.kind === 'currency' && p.units > 0);
+  const payPot = currencyPots.find((p) => p.id === fromPot);
+  const canPayFromPot = isAdmin && !entry && kind === 'expense' && fund !== '' && fund !== ASSET && currencyPots.length > 0;
+  const selling = canPayFromPot && paidFromPot;
+  const quote = useLoad<MarketPrice>(selling && payPot ? `${base}/market/price?date=${date}&currency=${payPot.currency}` : null);
+  const fx = useFx(quote.data ? quote.data.price * quote.data.rate : null);
   // Продажа актива с деньгами во вклад: расход с её даты (до новой покупки) забирается из этого вклада
   const assetDeals = useLoad<PotQuotes>(fund === ASSET && pot ? `${base}/pots/${pot}/quotes` : null).data?.moves ?? [];
   const sale = [...assetDeals].reverse().find((m) => m.amount < 0 && m.date <= date);
@@ -538,9 +541,9 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
 
   // Подставленные автоматически теги изменением не считаются
   const snapshot = (over: { amount?: string; comment?: string; tags?: string[] } = {}) =>
-    JSON.stringify([kind, over.amount ?? amount, fund, date, over.comment ?? comment, paidBy, earnedBy, pot, refundOf, paidFromPot, fromPot, potUnits, over.tags ?? (tagsTouched.current ? tags : entry?.tags ?? [])]);
+    JSON.stringify([kind, over.amount ?? amount, fund, date, over.comment ?? comment, paidBy, earnedBy, pot, refundOf, paidFromPot, fromPot, over.amount === '' ? '' : fx.shown('units'), over.tags ?? (tagsTouched.current ? tags : entry?.tags ?? [])]);
   // Та же проверка, что на сервере (affectsTotals): комментарий и привязка возврата итоги не меняют, о пересчёте не спрашивается
-  const totalsKey = () => JSON.stringify([kind, parseMoney(amount), fund, date, paidBy, kind === 'income' ? earnedBy : '', pot, paidFromPot && fromPot, paidFromPot && parseUnits(potUnits), [...tags].map((t) => t.toLowerCase()).sort()]);
+  const totalsKey = () => JSON.stringify([kind, parseMoney(amount), fund, date, paidBy, kind === 'income' ? earnedBy : '', pot, [...tags].map((t) => t.toLowerCase()).sort()]);
   const totalsBaseline = useRef(totalsKey());
   const recalcNeeded = !!entry?.closed && totalsKey() !== totalsBaseline.current;
   const baseline = useRef(snapshot());
@@ -570,14 +573,12 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
   }, [base, kind, fund, comment, amount]);
 
   async function save(andNext: boolean) {
-    const value = parseMoney(amount);
+    if (selling && !payPot) return setError('Выбери вклад, из которого оплачено.');
+    if (selling && !fx.units) return setError(`Укажи, сколько ${symbol(payPot!.currency)} потрачено.`);
+    const value = selling ? fx.sum : parseMoney(amount);
     if (!value || value <= 0) return setError('Введи сумму больше нуля.');
     if (kind !== 'income' && !fund) return setError('Выбери фонд.');
     if (kind !== 'income' && fund === ASSET && !pot) return setError('Выбери актив.');
-    const fromPotUsed = canPayFromPot && paidFromPot;
-    const sold = fromPotUsed ? parseUnits(potUnits) : null;
-    if (fromPotUsed && !fromPot) return setError('Выбери вклад, из которого оплачено.');
-    if (fromPotUsed && (!sold || sold <= 0)) return setError('Укажи, сколько продано из вклада.');
     const body = {
       date,
       kind: kind === 'income' ? 'income' : 'expense',
@@ -588,19 +589,20 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
       paidBy: paidBy === '' ? null : paidBy,
       earnedBy: kind !== 'income' || earnedBy === '' ? null : earnedBy,
       // У дохода привязка к депозиту (проценты) не меняется формой
-      potId: kind === 'income' ? undefined : fromPotUsed ? fromPot : fund !== ASSET || pot === '' ? null : pot,
-      potUnits: kind === 'income' ? undefined : sold,
+      potId: kind === 'income' ? undefined : fund !== ASSET || pot === '' ? null : pot,
       refundOf: kind === 'refund' && refundOf !== '' ? refundOf : null,
       tags,
       ...(reminder ? { reminderId: reminder.id } : {}),
+      ...(selling ? { sellFrom: { potId: fromPot, units: fx.units } } : {}),
     };
     try {
       const done = await withRecalc((recalc) => (entry ? api.put(`${base}/entries/${entry.id}`, { ...body, recalc }) : api.post(`${base}/entries`, { ...body, recalc })));
       if (done === null) return;
       setError(null);
       if (!andNext) return onClose();
-      setSaved(`Сохранено: ${money(value)}`);
+      setSaved(selling ? `Сохранено: ${money(value)}, во вкладе «${payPot!.name}» продано ${units(fx.units!)} ${symbol(payPot!.currency)}` : `Сохранено: ${money(value)}`);
       setAmount('');
+      fx.reset();
       setComment('');
       setTags([]);
       tagsTouched.current = false;
@@ -639,7 +641,7 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
       {recalcNeeded && unlocked && <Banner kind="warn">После сохранения итоги закрытого месяца пересчитаются.</Banner>}
       <fieldset className="plain" disabled={!unlocked}>
       <Segmented value={kind} options={kinds} onChange={setKind} />
-      <Field label={`Сумма, ${symbol()}`}><input className="amount" inputMode="decimal" autoFocus={!entry} value={amount} onChange={(e) => setAmount(numberInput(e.target.value))} placeholder="0" /></Field>
+      {!selling && <Field label={`Сумма, ${symbol()}`}><input className="amount" inputMode="decimal" autoFocus={!entry} value={amount} onChange={(e) => setAmount(numberInput(e.target.value))} placeholder="0" /></Field>}
       {kind !== 'income' && (
         <div className="field">
           <span>Фонд</span>
@@ -663,32 +665,31 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
       )}
       {canPayFromPot && (
         <label className="check-row">
-          <input type="checkbox" checked={paidFromPot} onChange={(e) => setPaidFromPot(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={paidFromPot}
+            onChange={(e) => {
+              setPaidFromPot(e.target.checked);
+              // Уже введённая сумма в основной валюте переходит в поля продажи
+              if (e.target.checked && amount && !fx.shown('sum')) fx.type('sum', amount);
+            }}
+          />
           <span>
-            <b>Оплачено из вклада</b>
-            <div className="muted small">Платил валютой или акциями из вклада, а не тенге. Во вкладе запишется продажа на сумму расхода.</div>
+            <b>Оплачено из валютного вклада</b>
+            <div className="muted small">Платил валютой, а не {symbol()}. Запишутся две операции: продажа валюты во вкладе и этот расход на ту же сумму.</div>
           </span>
         </label>
       )}
-      {canPayFromPot && paidFromPot && (
+      {selling && (
         <>
           <Field label="Вклад">
             <select value={fromPot} onChange={(e) => setFromPot(e.target.value ? Number(e.target.value) : '')}>
               <option value="">Выбери вклад</option>
-              {foreignPots.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              {currencyPots.map((p) => <option key={p.id} value={p.id}>{p.name} · есть {units(p.units)} {symbol(p.currency)}</option>)}
             </select>
           </Field>
-          <Field
-            label={payPot?.kind === 'stock' ? 'Продано акций, шт.' : `Потрачено, ${payPot ? symbol(payPot.currency) : 'в валюте вклада'}`}
-            hint={(() => {
-              const sold = parseUnits(potUnits);
-              const value = parseMoney(amount);
-              const rate = sold && value ? ` Курс выходит ${units(value / 100 / sold, 4)} ${symbol()} за ${payPot?.kind === 'stock' ? 'штуку' : payPot ? symbol(payPot.currency) : 'единицу'}.` : '';
-              return `Сумма в ${symbol()} выше: столько стоили проданные единицы. Она придёт в свободные от продажи и тут же уйдёт расходом из фонда.${rate}`;
-            })()}
-          >
-            <input inputMode="decimal" placeholder={payPot ? `Есть ${units(payPot.units, 4)}` : ''} value={potUnits} onChange={(e) => setPotUnits(numberInput(e.target.value, { decimals: 8 }))} />
-          </Field>
+          {payPot && <FxFields fx={fx} currency={payPot.currency} unitsLabel="Потрачено" />}
+          {payPot && <p className="muted small">Деньги от продажи придут в свободные, а расход заберёт столько же из фонда.</p>}
         </>
       )}
       <Field label="Дата"><DateInput value={date} onChange={setDate} /></Field>

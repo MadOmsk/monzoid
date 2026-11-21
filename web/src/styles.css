@@ -96,8 +96,6 @@ input.amount { font-size: 26px; font-weight: 600; }
 .btn.small { width: auto; flex: none; padding: 8px 12px; border-radius: 10px; font-size: 14px; }
 .row { display: flex; gap: 8px; }
 .stack { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-/* Правка сделки внутри строки истории: поля отделены от подписи и друг от друга */
-.deal-edit { gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
 .link { color: var(--link); font-size: 14px; align-self: flex-start; padding: 4px 0; }
 .icon { font-size: 18px; line-height: 1; padding: 6px 8px; color: var(--muted); flex: none; }
 
