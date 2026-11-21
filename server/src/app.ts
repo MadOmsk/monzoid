@@ -14,6 +14,7 @@ import { assertWritable, buildReports, closeMonth, createVirtualMember, DomainEr
 import { applyDecisions, createImport, getImport, listOpenImports, listSentImports, revertImport, saveDraft, type UploadedFile } from './imports.js';
 import { listQueue, processQueue, removeQueued } from './queue.js';
 import { syncProceeds } from './proceeds.js';
+import { nextInterest, PAYOUTS } from './interest.js';
 import { backfillPotPrices, convert, ensureRatesOn, potQuotes, rateOn, saveQuote, stockPriceOn, valuePots, type MarketSource } from './market.js';
 import type { FundSuggester } from './statements/ai.js';
 import { noteEntries, noteSettlement, scheduleNext, seriesFields, skipReminder } from './notify.js';
@@ -776,7 +777,9 @@ export function buildApp(options: AppOptions) {
       if (earnedBy !== null && !get(db, 'SELECT 1 x FROM members WHERE ledger_id = ? AND user_id = ? AND inactive_at IS NULL', ctx.ledgerId, earnedBy)) {
         throw new DomainError('Участник не найден', 404);
       }
-      return { ...body, fundId: null, paidBy: null, earnedBy, potId: null, refundOf: null };
+      // Доход может быть процентами по депозиту (вклад в основной валюте); не передан = не менять
+      if (body.potId && !get(db, `SELECT 1 x FROM pots WHERE id = ? AND ledger_id = ? AND kind = 'cash'`, body.potId, ctx.ledgerId)) throw new DomainError('Вклад не найден', 404);
+      return { ...body, fundId: null, paidBy: null, earnedBy, potId: body.potId, refundOf: null };
     }
     if (body.potId && !get(db, `SELECT 1 x FROM pots WHERE id = ? AND ledger_id = ? AND kind = 'asset'`, body.potId, ctx.ledgerId)) {
       throw new DomainError('Актив не найден', 404);
@@ -1216,7 +1219,51 @@ export function buildApp(options: AppOptions) {
 
   app.get(`${L}/pots`, async (req) => {
     const { ledgerId } = access(req);
-    return valuePots(db, ledgerId);
+    const today = new Date().toISOString().slice(0, 10);
+    const deposits = new Map(
+      all<{ id: number; rate: number | null; payout: string | null; rateFrom: string | null }>(db, `SELECT id, rate, payout, rate_from rateFrom FROM pots WHERE ledger_id = ? AND kind = 'cash'`, ledgerId).map((p) => [p.id, p]),
+    );
+    // У депозита ставка, выплата и ближайшие проценты: due ждёт подтверждения
+    return valuePots(db, ledgerId).map((p) => {
+      const d = deposits.get(p.id);
+      return d?.rate ? { ...p, rate: d.rate, payout: d.payout, rateFrom: d.rateFrom, interest: nextInterest(db, p.id, today) } : p;
+    });
+  });
+
+  // Проценты по депозиту не начисляются сами: человек подтверждает посчитанную сумму (может её поправить) или пропускает период
+  app.post(`${L}/pots/:potId/interest`, async (req) => {
+    const { ledgerId, userId } = access(req, true);
+    const potId = Number((req.params as any).potId);
+    const body = z.object({ to: Day, amount: Money.optional(), skip: z.boolean().default(false), recalc: z.boolean().default(false) }).parse(req.body);
+    const pot = get<{ name: string; kind: string }>(db, 'SELECT name, kind FROM pots WHERE id = ? AND ledger_id = ?', potId, ledgerId);
+    if (!pot || pot.kind !== 'cash') throw new DomainError('Депозит не найден', 404);
+    const { due } = nextInterest(db, potId, new Date().toISOString().slice(0, 10));
+    if (!due || due.to !== body.to) throw new DomainError('Этот период уже начислен или ещё не закончился. Обнови экран.', 409);
+    if (body.skip) {
+      run(db, 'UPDATE pots SET interest_skipped = ? WHERE id = ?', due.to, potId);
+      return { ok: true };
+    }
+    const amount = body.amount ?? due.amount;
+    if (amount <= 0) throw new DomainError('Проценты должны быть больше нуля. Если их нет, пропусти период.');
+    assertWritable(db, ledgerId, due.to, body.recalc);
+    const id = tx(db, () => {
+      const entryId = Number(
+        run(
+          db,
+          `INSERT INTO entries (ledger_id, date, kind, amount, description, comment, pot_id, created_by) VALUES (?, ?, 'income', ?, '', ?, ?, ?)`,
+          ledgerId,
+          due.to,
+          amount,
+          `Проценты по вкладу «${pot.name}»`,
+          potId,
+          userId,
+        ).lastInsertRowid,
+      );
+      setEntryTags(db, ledgerId, entryId, ['проценты']);
+      logChange(db, ledgerId, userId, 'entry', entryId, 'create', null, snapshot(db, 'entry', entryId));
+      return entryId;
+    });
+    return { id };
   });
 
   app.post(`${L}/pots`, async (req) => {
@@ -1316,9 +1363,9 @@ export function buildApp(options: AppOptions) {
 
   /** Записи, которые следуют за продажей актива, руками не правятся. */
   const assertOwnMove = (moveId: number) => {
-    if (get(db, 'SELECT 1 x FROM pot_moves WHERE id = ? AND sale_move_id IS NOT NULL', moveId)) {
-      throw new DomainError('Эта запись следует за продажей актива: поправь продажу или расход в карточке актива.');
-    }
+    const row = get<{ sale: number | null; entry: number | null }>(db, 'SELECT sale_move_id sale, entry_id entry FROM pot_moves WHERE id = ?', moveId);
+    if (row?.sale) throw new DomainError('Эта запись следует за продажей актива: поправь продажу или расход в карточке актива.');
+    if (row?.entry) throw new DomainError('Это проценты по депозиту: поправь или убери операцию дохода.');
   };
 
   app.post(`${L}/pots/:potId/moves`, async (req) => {
@@ -1578,8 +1625,29 @@ export function buildApp(options: AppOptions) {
     const potId = Number((req.params as any).potId);
     const pot = potOf(ledgerId, potId);
     const body = z
-      .object({ name: Name.optional(), openingBalance: Money.optional(), openingUnits: z.number().finite().optional(), recalc: z.boolean().default(false) })
+      .object({
+        name: Name.optional(),
+        openingBalance: Money.optional(),
+        openingUnits: z.number().finite().optional(),
+        // Депозит: ставка в процентах годовых (null убирает), период выплаты и дата открытия
+        rate: z.number().finite().positive('Ставка должна быть больше нуля').max(100, 'Проверь ставку').nullable().optional(),
+        payout: z.enum(PAYOUTS as [string, ...string[]]).optional(),
+        rateFrom: Day.optional(),
+        recalc: z.boolean().default(false),
+      })
       .parse(req.body);
+    if (body.rate !== undefined || body.payout !== undefined || body.rateFrom !== undefined) {
+      if (pot.kind !== 'cash') throw new DomainError('Ставка бывает только у вклада в основной валюте.');
+      if (body.rate === null) run(db, 'UPDATE pots SET rate = NULL WHERE id = ?', potId);
+      else {
+        const current = get<{ rate: number | null; payout: string | null; rate_from: string | null }>(db, 'SELECT rate, payout, rate_from FROM pots WHERE id = ?', potId)!;
+        const rate = body.rate ?? current.rate;
+        const payout = body.payout ?? current.payout ?? 'month';
+        const from = body.rateFrom ?? current.rate_from;
+        if (!rate || !from) throw new DomainError('Укажи ставку и дату открытия депозита.');
+        run(db, 'UPDATE pots SET rate = ?, payout = ?, rate_from = ? WHERE id = ?', rate, payout, from, potId);
+      }
+    }
     if (body.name !== undefined) {
       if (get(db, 'SELECT 1 x FROM pots WHERE ledger_id = ? AND name = ? AND id != ?', ledgerId, body.name, potId)) throw new DomainError('Вклад с таким названием уже есть.');
       run(db, 'UPDATE pots SET name = ? WHERE id = ?', body.name, potId);

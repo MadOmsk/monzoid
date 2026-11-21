@@ -575,7 +575,8 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
       comment,
       paidBy: paidBy === '' ? null : paidBy,
       earnedBy: kind !== 'income' || earnedBy === '' ? null : earnedBy,
-      potId: kind === 'income' || fund !== ASSET || pot === '' ? null : pot,
+      // У дохода привязка к депозиту (проценты) не меняется формой
+      potId: kind === 'income' ? undefined : fund !== ASSET || pot === '' ? null : pot,
       refundOf: kind === 'refund' && refundOf !== '' ? refundOf : null,
       tags,
       ...(reminder ? { reminderId: reminder.id } : {}),

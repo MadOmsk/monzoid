@@ -441,6 +441,13 @@ export function openDb(path: string): Db {
     // Перевод между вкладами: две сделки ссылаются друг на друга, дата и сумма у них общие, свободные не меняются
     db.exec('ALTER TABLE pot_moves ADD COLUMN pair_id INTEGER REFERENCES pot_moves(id)');
   }
+  if (!all<{ name: string }>(db, 'PRAGMA table_info(pots)').some((c) => c.name === 'rate')) {
+    // Депозит: номинальная ставка в процентах годовых, период выплаты, дата открытия и пропущенные выплаты (interest.ts)
+    db.exec('ALTER TABLE pots ADD COLUMN rate REAL');
+    db.exec('ALTER TABLE pots ADD COLUMN payout TEXT');
+    db.exec('ALTER TABLE pots ADD COLUMN rate_from TEXT');
+    db.exec('ALTER TABLE pots ADD COLUMN interest_skipped TEXT');
+  }
   const batchColumns = all<{ name: string }>(db, 'PRAGMA table_info(import_batches)');
   if (!batchColumns.some((c) => c.name === 'draft')) {
     // Черновик проверки выписки сохраняется при каждом изменении; sent_at отмечает отправку в учёт

@@ -9,6 +9,7 @@ import { paceAlerts } from '../src/domain.js';
 import { createImportFromRows } from '../src/imports.js';
 import { BATCH_QUIET_MS, reminderAction, takeNotices } from '../src/notify.js';
 import { backfillPotPrices, refreshMarket, type MarketSource } from '../src/market.js';
+import { nextInterest } from '../src/interest.js';
 import { suggestActions, merchantKey } from '../src/statements/classify.js';
 import { parseStatement, type StatementRow } from '../src/statements/parse.js';
 import { predictTags, type TagSample } from '../src/tagModel.js';
@@ -668,6 +669,55 @@ describe('основная валюта и копилки', () => {
     expect(await pot(cash)).toMatchObject({ balance: k(3800) });
     expect(await pot(usd)).toMatchObject({ balance: k(1200), units: 2 });
     expect(await free()).toBe(0);
+  });
+
+  it('проценты по депозиту: сложный процент по дням, начисляются только с подтверждением, доход идёт во вклад', async () => {
+    const { db, app, call } = start();
+    const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2024-01' })).body.id}`;
+    const deposit = (await call('POST', `${base}/pots`, { name: 'Депозит', kind: 'cash', openingBalance: k(1_000_000) })).body.id;
+    const usd = (await call('POST', `${base}/pots`, { name: 'Доллары', kind: 'currency', currency: 'USD' })).body.id;
+    expect((await call('PATCH', `${base}/pots/${usd}`, { rate: 5, rateFrom: '2024-01-10' })).status).toBe(400);
+    expect((await call('PATCH', `${base}/pots/${deposit}`, { rate: 12, payout: 'month', rateFrom: '2024-01-10' })).status).toBe(200);
+    const pot = async () => (await call('GET', `${base}/pots`)).body.find((p: any) => p.id === deposit);
+    const report = async (ym: string) => (await call('GET', `${base}/summary?ym=${ym}`)).body.report;
+
+    // Пока период не закончился, начислять нечего
+    expect(nextInterest(db, deposit, '2024-02-09')).toEqual({ due: null, next: '2024-02-10' });
+    // 31 день по 12% годовых с миллиона
+    const first = Math.round((k(1_000_000) * 12) / 100 / 365 * 31);
+    expect(nextInterest(db, deposit, '2024-02-15').due).toEqual({ from: '2024-01-10', to: '2024-02-10', amount: first });
+    expect((await pot()).interest.due).toMatchObject({ to: '2024-02-10', amount: first });
+
+    // Подтверждение: доход с тегом «проценты», во вкладе вложение на ту же сумму, свободные не меняются
+    expect((await call('POST', `${base}/pots/${deposit}/interest`, { to: '2024-03-10' })).status).toBe(409);
+    const confirmed = await app.inject({ method: 'POST', url: `${base}/pots/${deposit}/interest`, headers: { 'x-dev-user': '1' }, payload: { to: '2024-02-10' } });
+    expect(confirmed.statusCode).toBe(200);
+    expect(await pot()).toMatchObject({ balance: k(1_000_000) + first });
+    expect(await report('2024-02')).toMatchObject({ income: first, freeAfter: 0 });
+    const income = (await call('GET', `${base}/entries?ym=2024-02`)).body[0];
+    expect(income).toMatchObject({ kind: 'income', potId: deposit, tags: ['проценты'] });
+    const moves = (await call('GET', `${base}/pots/${deposit}/quotes`)).body.moves;
+    expect(moves).toMatchObject([{ amount: first, linked: true }]);
+    expect((await call('PUT', `${base}/pots/${deposit}/moves/${moves[0].id}`, { date: '2024-02-10', amount: k(1), comment: '' })).status).toBe(400);
+
+    // Следующий месяц считается уже с процентами (29 дней февраля 2024)
+    const second = Math.round(((k(1_000_000) + first) * 12) / 100 / 365 * 29);
+    expect((await pot()).interest.due).toMatchObject({ from: '2024-02-10', to: '2024-03-10', amount: second });
+
+    // Правка дохода переносится во вклад, привязка к вкладу при правке сохраняется
+    await call('PUT', `${base}/entries/${income.id}`, { date: '2024-02-10', kind: 'income', amount: k(10_000), comment: income.comment });
+    expect(await pot()).toMatchObject({ balance: k(1_010_000) });
+    // Отмена начисления возвращает период к подтверждению
+    expect((await call('POST', `${base}/changes/${confirmed.headers['x-change-id']}/revert`)).status).toBe(400);
+    await call('DELETE', `${base}/entries/${income.id}`);
+    expect(await pot()).toMatchObject({ balance: k(1_000_000) });
+    expect((await pot()).interest.due).toMatchObject({ to: '2024-02-10' });
+
+    // Пропуск: период не начисляется, следующий считается от его конца
+    expect((await call('POST', `${base}/pots/${deposit}/interest`, { to: '2024-02-10', skip: true })).status).toBe(200);
+    expect((await pot()).interest.due).toMatchObject({ from: '2024-02-10', to: '2024-03-10' });
+    expect((await call('PATCH', `${base}/pots/${deposit}`, { rate: null })).status).toBe(200);
+    expect((await pot()).interest).toBeUndefined();
   });
 
   it('сделки вклада правятся и снимаются, в закрытом месяце через журнал; вклад переименовывается', async () => {

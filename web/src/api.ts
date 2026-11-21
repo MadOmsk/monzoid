@@ -185,6 +185,11 @@ export interface Pot {
   valuedAt?: string | null;
   /** Изменение цены за последний день с котировкой */
   day?: { gain: number; since: string } | null;
+  /** Депозит: ставка в процентах годовых, период выплаты, дата открытия и ближайшие проценты (due ждёт подтверждения) */
+  rate?: number;
+  payout?: 'month' | 'quarter' | 'year';
+  rateFrom?: string;
+  interest?: { due: { from: string; to: string; amount: number } | null; next: string | null };
 }
 export interface AssetValue {
   id: number;

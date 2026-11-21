@@ -445,7 +445,7 @@ export async function potQuotes(db: Db, source: MarketSource, potId: number, tod
   // salePotId: актив, за продажей которого следует запись (её меняют в карточке актива)
   for (const move of all<{ id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: number; pairPotId: number | null; salePotId: number | null }>(
     db,
-    `SELECT m.id, m.date, m.amount, m.units, m.comment, m.to_pot_id toPotId, m.sale_move_id IS NOT NULL linked, p.pot_id pairPotId, s.pot_id salePotId
+    `SELECT m.id, m.date, m.amount, m.units, m.comment, m.to_pot_id toPotId, (m.sale_move_id IS NOT NULL OR m.entry_id IS NOT NULL) linked, p.pot_id pairPotId, s.pot_id salePotId
      FROM pot_moves m LEFT JOIN pot_moves p ON p.id = m.pair_id LEFT JOIN pot_moves s ON s.id = m.sale_move_id
      WHERE m.pot_id = ? AND m.inactive_at IS NULL ORDER BY m.date, m.id`,
     potId,

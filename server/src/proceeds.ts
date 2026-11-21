@@ -1,4 +1,5 @@
 import { all, get, run, type Db } from './db.js';
+import { syncInterest } from './interest.js';
 
 interface Linked {
   potId: number;
@@ -14,6 +15,8 @@ interface Linked {
  * Эти записи следуют за продажей и расходами и руками не правятся; функция приводит их в соответствие после любой записи.
  */
 export function syncProceeds(db: Db, ledgerId: number): void {
+  // Проценты по депозиту тоже следуют за операцией дохода
+  syncInterest(db, ledgerId);
   const sales = all<{ id: number; potId: number; date: string; amount: number; toPotId: number; name: string }>(
     db,
     `SELECT m.id, m.pot_id potId, m.date, m.amount, m.to_pot_id toPotId, p.name FROM pot_moves m JOIN pots p ON p.id = m.pot_id
