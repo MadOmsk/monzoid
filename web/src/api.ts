@@ -191,7 +191,7 @@ export interface Pot {
   rateFrom?: string;
   /** Первая выплата, если день выплат не совпадает с днём открытия */
   payoutFirst?: string | null;
-  interest?: { due: { from: string; to: string; amount: number } | null; remind: boolean; next: string | null };
+  interest?: { due: { from: string; to: string; amount: number } | null; remind: boolean; next: string | null; expected: number | null };
 }
 export interface AssetValue {
   id: number;

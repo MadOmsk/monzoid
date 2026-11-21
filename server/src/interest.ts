@@ -72,15 +72,20 @@ export interface InterestPeriod {
  * складываются. Начисленные проценты лежат во вкладе, поэтому следующий период считается уже с ними (сложный
  * процент). При ежедневном начислении каждый день считается и с набежавших процентов, а период идёт по сегодня.
  * Пополнения и снятия внутри периода учитываются с их даты.
- * due: проценты, которые можно начислить; remind: пора напомнить (у ежедневного раз в месяц); next: следующее начисление.
+ * due: проценты, которые можно начислить; remind: пора напомнить (у ежедневного раз в месяц); next: следующее начисление;
+ * expected: сколько ожидается в день next по нынешнему остатку (только у выплат раз в период, пока прошлые подтверждены).
  */
-export function nextInterest(db: Db, potId: number, today: string): { due: InterestPeriod | null; remind: boolean; next: string | null } {
+export function nextInterest(
+  db: Db,
+  potId: number,
+  today: string,
+): { due: InterestPeriod | null; remind: boolean; next: string | null; expected: number | null } {
   const pot = get<{ kind: string; rate: number | null; payout: Payout | null; rateFrom: string | null; first: string | null; skipped: string | null; opening: number }>(
     db,
     'SELECT kind, rate, payout, rate_from rateFrom, payout_first first, interest_skipped skipped, opening_balance opening FROM pots WHERE id = ?',
     potId,
   );
-  if (!pot || pot.kind !== 'cash' || !pot.rate || !pot.payout || !pot.rateFrom) return { due: null, remind: false, next: null };
+  if (!pot || pot.kind !== 'cash' || !pot.rate || !pot.payout || !pot.rateFrom) return { due: null, remind: false, next: null, expected: null };
   const confirmed = get<{ date: string | null }>(db, `SELECT MAX(date) date FROM entries WHERE pot_id = ? AND kind = 'income' AND inactive_at IS NULL`, potId)?.date;
   const start = [pot.rateFrom, confirmed, pot.skipped].filter((d): d is string => !!d).sort().at(-1)!;
   const daily = pot.payout === 'day';
@@ -88,7 +93,7 @@ export function nextInterest(db: Db, potId: number, today: string): { due: Inter
   let to: string;
   if (daily) {
     // Начислить можно по сегодня, напоминание через месяц после прошлого начисления
-    if (start >= today) return { due: null, remind: false, next: addDays(today, 1) };
+    if (start >= today) return { due: null, remind: false, next: addDays(today, 1), expected: null };
     from = start;
     to = today;
   } else {
@@ -98,21 +103,27 @@ export function nextInterest(db: Db, potId: number, today: string): { due: Inter
     let k = 0;
     while (addMonths(first, k * step) <= start) k++;
     to = addMonths(first, k * step);
-    if (to > today) return { due: null, remind: false, next: to };
     from = [k === 0 ? pot.rateFrom : addMonths(first, (k - 1) * step), start].sort().at(-1)!;
+    // Выплата ещё не наступила: сколько придёт, если остаток до неё не изменится
+    if (to > today) return { due: null, remind: false, next: to, expected: accrue(db, potId, pot.opening, pot.rate, from, to, false) };
   }
+  const amount = accrue(db, potId, pot.opening, pot.rate, from, to, daily);
+  return { due: { from, to, amount }, remind: !daily || addMonths(from, 1) <= today, next: daily ? addDays(today, 1) : to, expected: null };
+}
 
+/** Проценты за дни после from по to включительно в тиынах, с пополнениями и снятиями по их датам. */
+function accrue(db: Db, potId: number, opening: number, rate: number, from: string, to: string, daily: boolean): number {
   const moves = all<{ date: string; amount: number }>(db, 'SELECT date, amount FROM pot_moves WHERE pot_id = ? AND inactive_at IS NULL ORDER BY date', potId);
-  let balance = pot.opening + moves.filter((m) => m.date <= from).reduce((s, m) => s + m.amount, 0);
+  let balance = opening + moves.filter((m) => m.date <= from).reduce((s, m) => s + m.amount, 0);
   let i = moves.findIndex((m) => m.date > from);
   if (i < 0) i = moves.length;
   let total = 0;
   for (let day = addDays(from, 1); day <= to; day = addDays(day, 1)) {
     // Деньги, положенные в день, приносят проценты со следующего дня; при ежедневном начислении и набежавшие проценты
-    total += (Math.max(balance + (daily ? total : 0), 0) * pot.rate) / 100 / DAYS_IN_YEAR;
+    total += (Math.max(balance + (daily ? total : 0), 0) * rate) / 100 / DAYS_IN_YEAR;
     while (i < moves.length && moves[i].date <= day) balance += moves[i++].amount;
   }
-  return { due: { from, to, amount: Math.round(total) }, remind: !daily || addMonths(from, 1) <= today, next: daily ? addDays(today, 1) : to };
+  return Math.round(total);
 }
 
 /**

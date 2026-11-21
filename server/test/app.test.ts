@@ -738,9 +738,10 @@ describe('основная валюта и копилки', () => {
     const report = async (ym: string) => (await call('GET', `${base}/summary?ym=${ym}`)).body.report;
 
     // Пока период не закончился, начислять нечего
-    expect(nextInterest(db, deposit, '2024-02-09')).toEqual({ due: null, remind: false, next: '2024-02-10' });
     // 31 день по 12% годовых с миллиона: внутри периода проценты на проценты не идут
     const first = Math.round((k(1_000_000) * 12) / 100 / 365 * 31);
+    // До выплаты видно, сколько придёт и когда
+    expect(nextInterest(db, deposit, '2024-02-09')).toEqual({ due: null, remind: false, next: '2024-02-10', expected: first });
     expect(nextInterest(db, deposit, '2024-02-15').due).toEqual({ from: '2024-01-10', to: '2024-02-10', amount: first });
     expect((await pot()).interest.due).toMatchObject({ to: '2024-02-10', amount: first });
 
@@ -790,7 +791,8 @@ describe('основная валюта и копилки', () => {
     expect(nextInterest(db, id, '2024-01-30').due).toEqual({ from: '2024-01-10', to: '2024-01-25', amount: Math.round((k(1_000_000) * 12) / 100 / 365 * 15) });
     expect(nextInterest(db, id, '2024-02-20')).toMatchObject({ due: { to: '2024-01-25' } });
     await call('POST', `${base}/pots/${id}/interest`, { to: '2024-01-25' });
-    expect(nextInterest(db, id, '2024-02-20')).toEqual({ due: null, remind: false, next: '2024-02-25' });
+    expect(nextInterest(db, id, '2024-02-20')).toMatchObject({ due: null, remind: false, next: '2024-02-25' });
+    expect(nextInterest(db, id, '2024-02-20').expected).toBeGreaterThan(Math.round((k(1_000_000) * 12) / 100 / 365 * 31));
     // Пополнение и снятие внутри периода: деньги приносят проценты со следующего дня после операции
     const topped = (await call('POST', `${base}/pots`, { name: 'С пополнением', kind: 'cash', openingBalance: k(1_000_000), rate: 12, payout: 'month', rateFrom: '2024-01-10' })).body.id;
     await call('POST', `${base}/pots/${topped}/moves`, { date: '2024-01-20', amount: k(500_000), units: 0, comment: '' });
@@ -804,16 +806,16 @@ describe('основная валюта и копилки', () => {
     });
     // Квартальное начисление: от первой выплаты каждые три месяца
     await call('PATCH', `${base}/pots/${id}`, { payout: 'quarter' });
-    expect(nextInterest(db, id, '2024-02-20')).toEqual({ due: null, remind: false, next: '2024-04-25' });
+    expect(nextInterest(db, id, '2024-02-20')).toMatchObject({ due: null, remind: false, next: '2024-04-25' });
 
     // Каждый день: проценты и на вчерашние проценты, начислить можно по сегодня, напоминание раз в месяц
     const daily = (await call('POST', `${base}/pots`, { name: 'Ежедневный', kind: 'cash', openingBalance: k(1_000_000), rate: 12, payout: 'day', rateFrom: '2024-01-10', payoutFirst: '2024-01-25' })).body.id;
     expect((await call('GET', `${base}/pots`)).body.find((p: any) => p.id === daily)).toMatchObject({ payout: 'day', payoutFirst: null });
     let total = 0;
     for (let i = 0; i < 5; i++) total += ((k(1_000_000) + total) * 12) / 100 / 365;
-    expect(nextInterest(db, daily, '2024-01-15')).toEqual({ due: { from: '2024-01-10', to: '2024-01-15', amount: Math.round(total) }, remind: false, next: '2024-01-16' });
+    expect(nextInterest(db, daily, '2024-01-15')).toEqual({ due: { from: '2024-01-10', to: '2024-01-15', amount: Math.round(total) }, remind: false, next: '2024-01-16', expected: null });
     expect(nextInterest(db, daily, '2024-02-10')).toMatchObject({ remind: true });
-    expect(nextInterest(db, daily, '2024-01-10')).toEqual({ due: null, remind: false, next: '2024-01-11' });
+    expect(nextInterest(db, daily, '2024-01-10')).toEqual({ due: null, remind: false, next: '2024-01-11', expected: null });
   });
 
   it('пустой вклад удаляется, вклад с записями нет', async () => {

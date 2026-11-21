@@ -129,7 +129,7 @@ function potFacts(p: Pot): string {
   if (p.kind === 'currency') return `${amount(p.units)} ${symbol(p.currency)}${p.price !== null ? ` · курс ${amount(p.price)}` : ''}`;
   if (p.kind === 'asset') return p.units <= 0 ? 'Продан' : p.valuedAt ? `Оценка на ${shortDate(p.valuedAt)}` : 'По уплаченной сумме';
   if (p.rate) {
-    const state = p.interest?.due && p.interest.remind ? 'проценты ждут подтверждения' : p.payout !== 'day' && p.interest?.next ? `выплата ${shortDate(p.interest.next)}` : `начисление ${PAYOUT_WORDS[p.payout ?? 'month']}`;
+    const state = p.interest?.due && p.interest.remind ? 'проценты ждут подтверждения' : p.payout !== 'day' && p.interest?.next ? `${p.interest.expected ? `≈ ${money(p.interest.expected)} к ` : 'выплата '}${shortDate(p.interest.next)}` : `начисление ${PAYOUT_WORDS[p.payout ?? 'month']}`;
     return `Депозит ${amount(p.rate)}% · ${state}`;
   }
   return 'В основной валюте';
@@ -693,6 +693,11 @@ function Deposit({ base, pot, isAdmin, onChanged }: { base: string; pot: Pot; is
               <Button small onClick={skip}>Пропустить</Button>
             </div>
           )}
+        </div>
+      )}
+      {!due && pot.payout !== 'day' && pot.interest?.next && pot.interest.expected !== null && (
+        <div className="banner info">
+          Ожидается {dayMonth(pot.interest.next)}: <b>≈ {money(pot.interest.expected)}</b>. Посчитано по нынешнему остатку; пополнения и снятия до выплаты изменят сумму.
         </div>
       )}
       <p className="muted small">
