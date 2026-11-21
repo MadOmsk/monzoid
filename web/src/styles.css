@@ -301,7 +301,8 @@ fieldset.plain { display: contents; border: 0; padding: 0; margin: 0; min-width:
 .pot-group .pot-value { font-size: 14.5px; font-weight: 600; color: var(--text); }
 .pot-group h2 { margin: 6px 0 0; }
 .pot-group-sum { margin: -4px 0 2px; }
-.chart-readout { display: flex; flex-wrap: wrap; gap: 2px 12px; min-height: 40px; margin: 6px 0; font-size: 13px; }
+/* Подсказка под графиком: при нажатии меняется только она, сам график не сдвигается */
+.chart-readout { display: flex; flex-wrap: wrap; gap: 2px 12px; min-height: 40px; margin: 6px 0 0; font-size: 13px; }
 .chart-readout b { flex-basis: 100%; }
 .tick { font-size: 10px; fill: var(--muted); }
 .grid { stroke: var(--line); stroke-width: 1; }

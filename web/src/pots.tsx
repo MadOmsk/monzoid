@@ -1062,17 +1062,6 @@ function PriceChart({ points, buys, average, unit, period }: {
         {buys.length > 0 && <span><i className="dot" style={{ background: 'var(--series-3)' }} />Покупки</span>}
         {average !== null && <span><i className="dashed" style={{ borderColor: 'var(--series-2)' }} />Средняя покупки</span>}
       </div>
-      <div className="chart-readout" aria-live="polite">
-        {active ? (
-          <>
-            <b>{dayMonth(active.date, true)}</b>
-            <span>{amount(active.price)} {unit}</span>
-            {average !== null && <span className={tone(active.price - average)}>{percent(active.price / average - 1)} к средней покупки</span>}
-          </>
-        ) : (
-          <span className="muted">Нажми на график, чтобы увидеть цену на дату</span>
-        )}
-      </div>
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`Цена за период, ${unit}`} onPointerMove={pointer} onPointerDown={pointer} onPointerLeave={() => setHover(null)}>
         {ticks.map((t) => (
           <g key={t}>
@@ -1095,6 +1084,17 @@ function PriceChart({ points, buys, average, unit, period }: {
           </>
         )}
       </svg>
+      <div className="chart-readout" aria-live="polite">
+        {active ? (
+          <>
+            <b>{dayMonth(active.date, true)}</b>
+            <span>{amount(active.price)} {unit}</span>
+            {average !== null && <span className={tone(active.price - average)}>{percent(active.price / average - 1)} к средней покупки</span>}
+          </>
+        ) : (
+          <span className="muted">Нажми на график, чтобы увидеть цену на дату</span>
+        )}
+      </div>
     </figure>
   );
 }

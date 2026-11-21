@@ -258,16 +258,6 @@ function LineChart<T extends { ym: string }>({ rows, series: allSeries, label, t
           </div>
         )
       )}
-      <div className="chart-readout" aria-live="polite">
-        {active ? (
-          <>
-            <b>{monthName(active.ym)}</b>
-            {series.map((s, j) => <span key={s.label}>{s.label}: {change ? signed(active.values[j]) : money(active.values[j])}</span>)}
-          </>
-        ) : (
-          <span className="muted">Нажми на график, чтобы увидеть месяц{trends.length > 0 && '. Бледный пунктир это тренд'}</span>
-        )}
-      </div>
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} onPointerMove={pointer} onPointerDown={pointer} onPointerLeave={() => setHover(null)}>
         {ticks.map((t) => (
           <g key={t}>
@@ -294,6 +284,16 @@ function LineChart<T extends { ym: string }>({ rows, series: allSeries, label, t
           </>
         )}
       </svg>
+      <div className="chart-readout" aria-live="polite">
+        {active ? (
+          <>
+            <b>{monthName(active.ym)}</b>
+            {series.map((s, j) => <span key={s.label}>{s.label}: {change ? signed(active.values[j]) : money(active.values[j])}</span>)}
+          </>
+        ) : (
+          <span className="muted">Нажми на график, чтобы увидеть месяц{trends.length > 0 && '. Бледный пунктир это тренд'}</span>
+        )}
+      </div>
     </figure>
   );
 }
