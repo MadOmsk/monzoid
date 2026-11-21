@@ -350,6 +350,12 @@ export function openDb(path: string): Db {
   if (!all<{ name: string }>(db, 'PRAGMA table_info(reminders)').some((c) => c.name === 'due_time')) {
     db.exec('ALTER TABLE reminders ADD COLUMN due_time TEXT');
   }
+  // Платёж в валюте: из вклада в валюте pot_id, units единиц валюты (сумма в основной валюте тогда пустая,
+  // она считается при подтверждении по курсу на дату)
+  if (!all<{ name: string }>(db, 'PRAGMA table_info(reminders)').some((c) => c.name === 'pot_id')) {
+    db.exec('ALTER TABLE reminders ADD COLUMN pot_id INTEGER REFERENCES pots(id)');
+    db.exec('ALTER TABLE reminders ADD COLUMN units REAL');
+  }
   // Перенос остатка: из фонда в фонд, из фонда в свободные или обратно (NULL = свободные). «Деньги» не меняет,
   // план и траты фондов тоже: меняются только остатки. archive_id: перенос сделала архивация фонда
   db.exec(`CREATE TABLE IF NOT EXISTS fund_transfers (

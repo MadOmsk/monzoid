@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { api, confirmAction, useLoad, type Fund } from './api';
+import { api, confirmAction, useLoad, type Fund, type Pot } from './api';
 import { useUnsaved } from './back';
-import { numberInput, dayMonth, fundLabel, money, parseMoney, toInput } from './format';
+import { amount as units, numberInput, dayMonth, fundLabel, money, parseMoney, parseUnits, symbol, toInput } from './format';
 import { Banner, Button, DateInput, Field, Header, Segmented } from './ui';
 
 export interface Reminder {
@@ -17,6 +17,17 @@ export interface Reminder {
   /** Время оплаты ЧЧ:ММ */
   dueTime: string | null;
   anchorDay: number | null;
+  /** Платёж в валюте: из этого вклада, units единиц валюты; сумма в основной валюте считается при подтверждении */
+  potId: number | null;
+  units: number | null;
+  potName: string | null;
+  currency: string | null;
+}
+
+/** Сумма платежа для показа: в валюте или в основной валюте */
+function sumText(r: Reminder): string | null {
+  if (r.units && r.currency) return `${units(r.units)} ${symbol(r.currency)}`;
+  return r.amount ? money(r.amount) : null;
 }
 
 
@@ -86,9 +97,9 @@ export function RemindersBlock({ base, onEdit, onConfirm }: { base: string; onEd
         <div key={r.id} className="reminder due">
           <div className="entry-main">
             <span className="entry-title">{r.comment}</span>
-            <b>{r.amount ? money(r.amount) : '—'}</b>
+            <b>{sumText(r) ?? '—'}</b>
           </div>
-          <div className="muted small">{[`Не подтверждено · ${dueText(r).toLowerCase()}`, r.repeat && scheduleText(r), r.fundName && fundLabel(r.fundName)].filter(Boolean).join(' · ')}</div>
+          <div className="muted small">{[`Не подтверждено · ${dueText(r).toLowerCase()}`, r.repeat && scheduleText(r), r.fundName && fundLabel(r.fundName), r.potName && `из «${r.potName}»`].filter(Boolean).join(' · ')}</div>
           <div className="reminder-actions">
             <Button small primary onClick={() => onConfirm(r)}>Подтвердить</Button>
             <Button small onClick={() => onEdit(r)}>Перенести</Button>
@@ -106,14 +117,14 @@ export function RemindersBlock({ base, onEdit, onConfirm }: { base: string; onEd
                 <button type="button" onClick={() => onEdit(r)}>
                   <div className="entry-main">
                     <span className="entry-title">{r.comment}</span>
-                    <b>{r.amount ? money(r.amount) : <span className="muted">сумма при оплате</span>}</b>
+                    <b>{sumText(r) ?? <span className="muted">сумма при оплате</span>}</b>
                   </div>
                   <div className="entry-main small">
                     <span>{dueText(r)}</span>
                     <span className="muted entry-date">{untilText(r.dueDate)}</span>
                   </div>
                   <div className="muted small">
-                    {[r.repeat && scheduleText(r), r.fundName && fundLabel(r.fundName), `напомню ${whenText(r.remindAt)}`].filter(Boolean).join(' · ')}
+                    {[r.repeat && scheduleText(r), r.fundName && fundLabel(r.fundName), r.potName && `из «${r.potName}»`, `напомню ${whenText(r.remindAt)}`].filter(Boolean).join(' · ')}
                   </div>
                 </button>
               </li>
@@ -152,6 +163,10 @@ function nextDue(period: Period, weekday: number, monthDay: number, time: string
 /** Новый платёж или перенос существующего: сначала периодичность, потом день и время, напоминание «за …». */
 export function ReminderForm({ base, reminder, onClose }: { base: string; reminder?: Reminder; onClose: () => void }) {
   const { data: funds } = useLoad<Fund[]>(`${base}/funds`);
+  // Платёж можно запланировать в валюте вклада: при подтверждении валюта продаётся по курсу на дату
+  const currencyPots = (useLoad<Pot[]>(`${base}/pots`).data ?? []).filter((p) => p.kind === 'currency' && (p.units > 0 || p.id === reminder?.potId));
+  const [pot, setPot] = useState<number | ''>(reminder?.potId ?? '');
+  const payPot = currencyPots.find((p) => p.id === pot);
   const tomorrow = ymd(new Date(Date.now() + 86_400_000));
   const startDate = reminder?.dueDate ?? tomorrow;
   const startTime = reminder?.dueTime ?? '10:00';
@@ -159,7 +174,7 @@ export function ReminderForm({ base, reminder, onClose }: { base: string; remind
   const oldBefore = reminder ? Math.round((dueMoment(startDate, startTime) - reminder.remindAt) / 60_000) : 60;
   const preset = BEFORE.some(([m]) => m === oldBefore);
   const [comment, setComment] = useState(reminder?.comment ?? '');
-  const [amount, setAmount] = useState(reminder?.amount ? toInput(reminder.amount) : '');
+  const [amount, setAmount] = useState(reminder?.units ? String(reminder.units).replace('.', ',') : reminder?.amount ? toInput(reminder.amount) : '');
   const [fund, setFund] = useState<number | ''>(reminder?.fundId ?? '');
   const [period, setPeriod] = useState<Period>(reminder?.repeat ?? 'once');
   const [date, setDate] = useState(startDate);
@@ -183,10 +198,12 @@ export function ReminderForm({ base, reminder, onClose }: { base: string; remind
   const remindAt = mode === 'exact' && period === 'once' ? new Date(exact).getTime() : dueMoment(dueDate, time) - beforeMin * 60_000;
 
   async function save() {
-    const value = amount.trim() ? parseMoney(amount) : null;
+    const value = amount.trim() ? (pot ? parseUnits(amount) : parseMoney(amount)) : null;
     if (value !== null && !(value > 0)) return setError('Сумма должна быть больше нуля или пустой.');
+    if (pot && value === null) return setError(`Укажи сумму в ${payPot ? symbol(payPot.currency) : 'валюте'}.`);
     if (!date || !time || !remindAt) return setError('Укажи дату и время.');
-    const body = { comment, amount: value, fundId: fund === '' ? null : fund, dueDate, dueTime: time, remindAt, repeat: period === 'once' ? null : period, ...(period === 'month' ? { anchorDay: monthDay } : {}) };
+    const money = pot ? { amount: null, potId: pot, units: value } : { amount: value, potId: null, units: null };
+    const body = { comment, ...money, fundId: fund === '' ? null : fund, dueDate, dueTime: time, remindAt, repeat: period === 'once' ? null : period, ...(period === 'month' ? { anchorDay: monthDay } : {}) };
     try {
       if (reminder) await api.put(`${base}/reminders/${reminder.id}`, body);
       else await api.post(`${base}/reminders`, body);
@@ -203,8 +220,16 @@ export function ReminderForm({ base, reminder, onClose }: { base: string; remind
       <Field label="За что">
         <input value={comment} maxLength={300} placeholder="Садик" onChange={(e) => setComment(e.target.value)} />
       </Field>
-      <Field label="Сумма" hint="Можно оставить пустой и указать при подтверждении.">
-        <input inputMode="decimal" value={amount} onChange={(e) => setAmount(numberInput(e.target.value))} />
+      {currencyPots.length > 0 && (
+        <Field label="Валюта" hint={payPot ? `При подтверждении ${symbol(payPot.currency)} продадутся из вклада «${payPot.name}» по курсу Нацбанка на дату оплаты, расход из фонда будет на ту же сумму в ${symbol()}.` : undefined}>
+          <select value={pot} onChange={(e) => { setPot(e.target.value ? Number(e.target.value) : ''); setAmount(''); }}>
+            <option value="">{symbol()}, основная</option>
+            {currencyPots.map((p) => <option key={p.id} value={p.id}>{symbol(p.currency)} из вклада «{p.name}»</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label={payPot ? `Сумма, ${symbol(payPot.currency)}` : 'Сумма'} hint={payPot ? undefined : 'Можно оставить пустой и указать при подтверждении.'}>
+        <input inputMode="decimal" value={amount} onChange={(e) => setAmount(numberInput(e.target.value, payPot ? { decimals: 2 } : undefined))} />
       </Field>
       <Field label="Фонд">
         <select value={fund} onChange={(e) => setFund(e.target.value ? Number(e.target.value) : '')}>

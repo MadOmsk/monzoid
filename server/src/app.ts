@@ -112,6 +112,9 @@ const ReminderBody = z.object({
   dueTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().default(null),
   /** Число месяца для ежемесячного: 31 в коротком месяце даёт последний день, а дальше снова 31 */
   anchorDay: z.number().int().min(1).max(31).optional(),
+  /** Платёж в валюте из этого вклада; сумма тогда в units, а amount пустой */
+  potId: z.number().int().nullable().default(null),
+  units: z.number().finite().positive('Сумма должна быть больше нуля').nullable().default(null),
 });
 
 const AdjustmentBody = z.object({
@@ -690,7 +693,9 @@ export function buildApp(options: AppOptions) {
       .filter((e: any) => source === null || (e.kind === 'income' && sources.get(e.id) === source))
       .filter((e: any) => paidBy === null || (e.kind === 'expense' && (paidBy === 'base' ? e.paidBy === null : e.paidBy === paidBy)))
       .map((e: any) => ({ ...e, source: e.kind === 'income' ? sources.get(e.id) ?? null : null, closed: !!e.closed, tags: JSON.parse(e.tags) as string[], refundOf: e.refundOf ? JSON.parse(e.refundOf) : null, refunded: e.refunded ?? 0 }));
-    return search ? rows.filter((e) => matchesSearch(e, search)) : rows;
+    // Конкретный день (фильтр «День»): месяц задают from и to, здесь остаются операции только этой даты
+    const day = typeof q.day === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(q.day) ? q.day : null;
+    return rows.filter((e) => (!day || (e as { date?: string }).date === day) && (!search || matchesSearch(e, search)));
   });
 
   // Покупки, к которым можно привязать возврат: ещё не возвращённые целиком, новые сверху.
@@ -1117,28 +1122,33 @@ export function buildApp(options: AppOptions) {
     const { ledgerId, userId } = access(req);
     return all(
       db,
-      `SELECT r.id, r.comment, r.amount, r.fund_id fundId, f.name fundName, r.due_date dueDate, r.due_time dueTime, r.remind_at remindAt, r.status, r.repeat, r.anchor_day anchorDay
-       FROM reminders r LEFT JOIN funds f ON f.id = r.fund_id
+      `SELECT r.id, r.comment, r.amount, r.fund_id fundId, f.name fundName, r.due_date dueDate, r.due_time dueTime, r.remind_at remindAt, r.status, r.repeat, r.anchor_day anchorDay,
+         r.pot_id potId, r.units, p.name potName, p.currency
+       FROM reminders r LEFT JOIN funds f ON f.id = r.fund_id LEFT JOIN pots p ON p.id = r.pot_id
        WHERE r.ledger_id = ? AND r.user_id = ? AND r.inactive_at IS NULL AND r.status <> 'done' ORDER BY r.due_date, r.remind_at`,
       ledgerId,
       userId,
     );
   });
 
-  function reminderFund(ledgerId: number, fundId: number | null) {
-    if (fundId !== null && !get(db, 'SELECT 1 x FROM funds WHERE id = ? AND ledger_id = ?', fundId, ledgerId)) throw new DomainError('Фонд не найден', 404);
+  /** Проверяет фонд и вклад платежа; у платежа в валюте сумма в units, а amount пустой */
+  function reminderFields(ledgerId: number, body: z.infer<typeof ReminderBody>) {
+    if (body.fundId !== null && !get(db, 'SELECT 1 x FROM funds WHERE id = ? AND ledger_id = ?', body.fundId, ledgerId)) throw new DomainError('Фонд не найден', 404);
+    if (body.potId === null) return { amount: body.amount, potId: null, units: null };
+    if (!get(db, `SELECT 1 x FROM pots WHERE id = ? AND ledger_id = ? AND kind = 'currency'`, body.potId, ledgerId)) throw new DomainError('Вклад в валюте не найден', 404);
+    return { amount: null, potId: body.potId, units: body.units };
   }
 
   app.post(`${L}/reminders`, async (req) => {
     const { ledgerId, userId } = access(req);
     const body = ReminderBody.parse(req.body);
-    reminderFund(ledgerId, body.fundId);
+    const f = reminderFields(ledgerId, body);
     const s = seriesFields(body.dueDate, body.remindAt, body.anchorDay);
     const id = run(
       db,
-      `INSERT INTO reminders (ledger_id, user_id, comment, amount, fund_id, due_date, due_time, remind_at, repeat, series_due, remind_offset, anchor_day)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ledgerId, userId, body.comment, body.amount, body.fundId, body.dueDate, body.dueTime, body.remindAt, body.repeat, s.seriesDue, s.remindOffset, s.anchorDay,
+      `INSERT INTO reminders (ledger_id, user_id, comment, amount, fund_id, due_date, due_time, remind_at, repeat, series_due, remind_offset, anchor_day, pot_id, units)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ledgerId, userId, body.comment, f.amount, body.fundId, body.dueDate, body.dueTime, body.remindAt, body.repeat, s.seriesDue, s.remindOffset, s.anchorDay, f.potId, f.units,
     ).lastInsertRowid;
     return { id: Number(id) };
   });
@@ -1147,13 +1157,13 @@ export function buildApp(options: AppOptions) {
   app.put(`${L}/reminders/:id`, async (req) => {
     const { ledgerId, userId } = access(req);
     const body = ReminderBody.parse(req.body);
-    reminderFund(ledgerId, body.fundId);
+    const f = reminderFields(ledgerId, body);
     const res = run(
       db,
-      `UPDATE reminders SET comment = ?, amount = ?, fund_id = ?, due_date = ?, remind_at = ?, repeat = ?, series_due = ?, remind_offset = ?, anchor_day = ?, due_time = ?,
+      `UPDATE reminders SET comment = ?, amount = ?, fund_id = ?, due_date = ?, remind_at = ?, repeat = ?, series_due = ?, remind_offset = ?, anchor_day = ?, due_time = ?, pot_id = ?, units = ?,
          status = CASE WHEN ? > ? THEN 'scheduled' ELSE status END
        WHERE id = ? AND ledger_id = ? AND user_id = ? AND status <> 'done' AND inactive_at IS NULL`,
-      body.comment, body.amount, body.fundId, body.dueDate, body.remindAt, body.repeat, ...Object.values(seriesFields(body.dueDate, body.remindAt, body.anchorDay)), body.dueTime,
+      body.comment, f.amount, body.fundId, body.dueDate, body.remindAt, body.repeat, ...Object.values(seriesFields(body.dueDate, body.remindAt, body.anchorDay)), body.dueTime, f.potId, f.units,
       body.remindAt, Date.now(), Number((req.params as any).id), ledgerId, userId,
     );
     if (!res.changes) throw new DomainError('Платёж не найден', 404);

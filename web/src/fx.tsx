@@ -15,10 +15,10 @@ function decimalText(value: number, digits: number): string {
  * тогда оно становится заданным, а считаться начинает то, что задавали раньше всех.
  * fixedSum: сумма задана снаружи (вторая сторона перевода валюты в валюту), тут считаются только курс и количество.
  */
-export function useFx(market: number | null, fixedSum?: number | null) {
-  const [typed, setTyped] = useState<Record<FxField, string>>({ sum: '', rate: '', units: '' });
+export function useFx(market: number | null, fixedSum?: number | null, initialUnits?: string) {
+  const [typed, setTyped] = useState<Record<FxField, string>>({ sum: '', rate: '', units: initialUnits ?? '' });
   // Заданные человеком поля, последнее в начале; считается поле, которого среди двух последних нет
-  const [edited, setEdited] = useState<FxField[]>([]);
+  const [edited, setEdited] = useState<FxField[]>(initialUnits ? ['units'] : []);
   const locked = fixedSum !== undefined;
 
   const own = edited.filter((f) => !locked || f !== 'sum');

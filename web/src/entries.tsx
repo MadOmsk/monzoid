@@ -7,11 +7,13 @@ import { amount as units, numberInput, dayMonth, defaultDate, fundLabel, memberL
 import { TagPicker } from './tags';
 import { Banner, Button, DateInput, Field, FundTiles, Header, MonthNav, Segmented, Spinner } from './ui';
 
-/** Период списка операций: месяц из навигации, выбранный диапазон месяцев или всё время. */
+/** Период списка операций: месяц из навигации, конкретный день, выбранный диапазон месяцев или всё время. */
 export interface EntryPeriod {
-  mode: 'month' | 'range' | 'all';
+  mode: 'month' | 'day' | 'range' | 'all';
   from: string;
   to: string;
+  /** Дата для режима «День» */
+  day?: string;
 }
 
 const ALL_TO = '9999-12';
@@ -111,13 +113,15 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
     view.autoAll = false;
     setMode(mode);
   };
-  const [from, to] = period.mode === 'all' ? [startYm, ALL_TO] : period.mode === 'month' ? [ym, ym] : [period.from, period.to];
+  const today = new Date().toISOString().slice(0, 10);
+  const day = period.day ?? (ym === currentYm ? today : `${ym}-01`);
+  const [from, to] = period.mode === 'all' ? [startYm, ALL_TO] : period.mode === 'month' ? [ym, ym] : period.mode === 'day' ? [day.slice(0, 7), day.slice(0, 7)] : [period.from, period.to];
   // У доходов нет фонда, поэтому фильтр по фонду для них не применяется
   const byFund = kind !== 'income' && fundId;
   // Источник только у доходов, плательщик только у расходов
   const bySource = kind === 'income' && source;
   const byPayer = kind === 'expense' && paidBy !== null;
-  const { data, error, reload } = useLoad<Entry[]>(`${base}/entries?from=${from}&to=${to}${kind !== 'all' ? `&kind=${kind}` : ''}${byFund ? `&fundId=${fundId}` : ''}${bySource ? `&source=${encodeURIComponent(source)}` : ''}${byPayer ? `&paidBy=${paidBy}` : ''}${tagId ? `&tagId=${tagId}` : ''}${search ? `&q=${encodeURIComponent(search)}` : ''}`);
+  const { data, error, reload } = useLoad<Entry[]>(`${base}/entries?from=${from}&to=${to}${kind !== 'all' ? `&kind=${kind}` : ''}${byFund ? `&fundId=${fundId}` : ''}${bySource ? `&source=${encodeURIComponent(source)}` : ''}${byPayer ? `&paidBy=${paidBy}` : ''}${tagId ? `&tagId=${tagId}` : ''}${search ? `&q=${encodeURIComponent(search)}` : ''}${period.mode === 'day' ? `&day=${day}` : ''}`);
   // Возврат из операции: список встаёт туда, где был
   useEffect(() => {
     if (!data || view.scrollY === null) return;
@@ -128,7 +132,8 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
   const several = period.mode !== 'month' || !!search;
   const spent = data?.reduce((s, e) => s + (e.kind === 'expense' ? e.amount : 0), 0) ?? 0;
   const earned = data?.reduce((s, e) => s + (e.kind === 'income' ? e.amount : 0), 0) ?? 0;
-  const setMode = (mode: EntryPeriod['mode']) => onPeriod(mode === 'range' && period.mode !== 'range' ? { mode, from: shiftYm(ym, -2) < startYm ? startYm : shiftYm(ym, -2), to: ym } : { ...period, mode });
+  const setMode = (mode: EntryPeriod['mode']) =>
+    onPeriod(mode === 'range' && period.mode !== 'range' ? { mode, from: shiftYm(ym, -2) < startYm ? startYm : shiftYm(ym, -2), to: ym } : { ...period, mode, ...(mode === 'day' ? { day } : {}) });
   const setRange = (key: 'from' | 'to', raw: string) => {
     if (!raw) return;
     // Поле месяца в некоторых браузерах пропускает значения вне min и max
@@ -158,6 +163,7 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
   const chips: { key: string; label: string; clear: () => void }[] = [
     ...(search ? [{ key: 'q', label: `«${search}»`, clear: () => { setQuery(''); setSearch(''); } }] : []),
     ...(period.mode === 'all' ? [{ key: 'p', label: 'Всё время', clear: () => choosePeriod('month') }] : []),
+    ...(period.mode === 'day' ? [{ key: 'p', label: dayMonth(day, true), clear: () => choosePeriod('month') }] : []),
     ...(period.mode === 'range' ? [{ key: 'p', label: period.from === period.to ? monthShort(period.from) : `${monthShort(period.from)} – ${monthShort(period.to)}`, clear: () => choosePeriod('month') }] : []),
     ...(kind !== 'all' ? [{ key: 'k', label: kind === 'income' ? 'Доходы' : 'Расходы', clear: () => onKind('all') }] : []),
     ...(byFund && fundName ? [{ key: 'f', label: fundLabel(fundName), clear: () => onFund(null) }] : []),
@@ -279,7 +285,12 @@ export function EntriesScreen({ base, ym, onYm, period, onPeriod, kind, onKind, 
       )}
       {filtersOpen && (
         <div className="filter-panel">
-          <Segmented value={period.mode} options={[['month', 'Месяц'], ['range', 'Период'], ['all', 'Всё время']]} onChange={choosePeriod} />
+          <Segmented value={period.mode} options={[['month', 'Месяц'], ['day', 'День'], ['range', 'Период'], ['all', 'Всё время']]} onChange={choosePeriod} />
+          {period.mode === 'day' && (
+            <Field label="Дата">
+              <DateInput label="Дата" value={day} min={`${startYm}-01`} max={today} onChange={(value) => value && onPeriod({ ...period, day: value })} />
+            </Field>
+          )}
           {period.mode === 'range' && (
             <div className="range-row">
               <Field label="С"><input type="month" value={period.from} min={startYm} max={currentYm} onChange={(e) => setRange('from', e.target.value)} /></Field>
@@ -516,14 +527,15 @@ export function EntryForm({ base, ym, userId, isAdmin, entry, fundId, income, re
   const assets = (pots ?? []).filter((p) => p.kind === 'asset');
   // Новый расход фонда, оплаченный валютой из вклада: вместе с ним записывается продажа этой валюты.
   // Сумма, курс и количество валюты: два задаются, третье считается; курс по умолчанию Нацбанка на дату
-  const [paidFromPot, setPaidFromPot] = useState(false);
-  const [fromPot, setFromPot] = useState<number | ''>('');
+  // Платёж, запланированный в валюте, сразу открывается с продажей из своего вклада
+  const [paidFromPot, setPaidFromPot] = useState(!!reminder?.potId);
+  const [fromPot, setFromPot] = useState<number | ''>(reminder?.potId ?? '');
   const currencyPots = (pots ?? []).filter((p) => p.kind === 'currency' && p.units > 0);
   const payPot = currencyPots.find((p) => p.id === fromPot);
   const canPayFromPot = isAdmin && !entry && kind === 'expense' && fund !== ASSET && currencyPots.length > 0;
   const selling = canPayFromPot && paidFromPot;
   const quote = useLoad<MarketPrice>(selling && payPot ? `${base}/market/price?date=${date}&currency=${payPot.currency}` : null);
-  const fx = useFx(quote.data ? quote.data.price * quote.data.rate : null);
+  const fx = useFx(quote.data ? quote.data.price * quote.data.rate : null, undefined, reminder?.units ? String(reminder.units).replace('.', ',') : undefined);
   // Продажа актива с деньгами во вклад: расход с её даты (до новой покупки) забирается из этого вклада
   const assetDeals = useLoad<PotQuotes>(fund === ASSET && pot ? `${base}/pots/${pot}/quotes` : null).data?.moves ?? [];
   const sale = [...assetDeals].reverse().find((m) => m.amount < 0 && m.date <= date);

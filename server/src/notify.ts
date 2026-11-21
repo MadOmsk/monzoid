@@ -70,18 +70,18 @@ function nextDue(due: string, repeat: Repeat, anchorDay: number): string {
 
 /** Повторяющийся платёж: после подтверждения или пропуска ставит следующий раз по плановой дате, а не по перенесённой. */
 export function scheduleNext(db: Db, reminderId: number): void {
-  const r = get<{ ledger_id: number; user_id: number; comment: string; amount: number | null; fund_id: number | null; repeat: Repeat | null; series_due: string; remind_offset: number; anchor_day: number; due_time: string | null }>(
+  const r = get<{ ledger_id: number; user_id: number; comment: string; amount: number | null; fund_id: number | null; repeat: Repeat | null; series_due: string; remind_offset: number; anchor_day: number; due_time: string | null; pot_id: number | null; units: number | null }>(
     db,
-    'SELECT ledger_id, user_id, comment, amount, fund_id, repeat, series_due, remind_offset, anchor_day, due_time FROM reminders WHERE id = ?',
+    'SELECT ledger_id, user_id, comment, amount, fund_id, repeat, series_due, remind_offset, anchor_day, due_time, pot_id, units FROM reminders WHERE id = ?',
     reminderId,
   );
   if (!r?.repeat) return;
   const due = nextDue(r.series_due, r.repeat, r.anchor_day);
   run(
     db,
-    `INSERT INTO reminders (ledger_id, user_id, comment, amount, fund_id, due_date, due_time, remind_at, repeat, series_due, remind_offset, anchor_day)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    r.ledger_id, r.user_id, r.comment, r.amount, r.fund_id, due, r.due_time, Date.parse(`${due}T00:00:00Z`) + r.remind_offset, r.repeat, due, r.remind_offset, r.anchor_day,
+    `INSERT INTO reminders (ledger_id, user_id, comment, amount, fund_id, due_date, due_time, remind_at, repeat, series_due, remind_offset, anchor_day, pot_id, units)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    r.ledger_id, r.user_id, r.comment, r.amount, r.fund_id, due, r.due_time, Date.parse(`${due}T00:00:00Z`) + r.remind_offset, r.repeat, due, r.remind_offset, r.anchor_day, r.pot_id, r.units,
   );
 }
 
@@ -148,16 +148,17 @@ export function takeNotices(db: Db, now = Date.now()): Notice[] {
 
   // Напоминания о платежах: свои, поэтому приходят и при выключенных уведомлениях об операциях,
   // но не по базе, где человек выключил уведомления или из которой вышел
-  for (const r of all<{ id: number; ledger_id: number; user_id: number; comment: string; amount: number | null; due_date: string; due_time: string | null; repeat: string | null }>(
+  for (const r of all<{ id: number; ledger_id: number; user_id: number; comment: string; amount: number | null; due_date: string; due_time: string | null; repeat: string | null; units: number | null; currency: string | null }>(
     db,
-    `SELECT id, ledger_id, user_id, comment, amount, due_date, due_time, repeat FROM reminders WHERE status = 'scheduled' AND inactive_at IS NULL AND remind_at <= ? ORDER BY remind_at`,
+    `SELECT r.id, r.ledger_id, r.user_id, r.comment, r.amount, r.due_date, r.due_time, r.repeat, r.units, p.currency
+     FROM reminders r LEFT JOIN pots p ON p.id = r.pot_id WHERE r.status = 'scheduled' AND r.inactive_at IS NULL AND r.remind_at <= ? ORDER BY r.remind_at`,
     now,
   )) {
     run(db, `UPDATE reminders SET status = 'due' WHERE id = ?`, r.id);
     if (r.user_id <= 0 || !ledgerNotify(db, r.user_id, r.ledger_id)) continue;
     const ledger = ledgerOf(r.ledger_id);
     const [, m, d] = r.due_date.split('-');
-    out.push({ chatId: r.user_id, ledgerId: r.ledger_id, screen: 'entries', reminderId: r.id, repeating: !!r.repeat, text: `Напоминание «${ledger.name}»: ${r.comment}${r.amount ? `, ${money(r.amount, ledger.currency)}` : ''}, оплатить ${d}.${m}${r.due_time ? ` в ${r.due_time}` : ''}. Подтвердить можно в «Операциях».` });
+    out.push({ chatId: r.user_id, ledgerId: r.ledger_id, screen: 'entries', reminderId: r.id, repeating: !!r.repeat, text: `Напоминание «${ledger.name}»: ${r.comment}${r.units && r.currency ? `, ${money(Math.round(r.units * 100), r.currency)}` : r.amount ? `, ${money(r.amount, ledger.currency)}` : ''}, оплатить ${d}.${m}${r.due_time ? ` в ${r.due_time}` : ''}. Подтвердить можно в «Операциях».` });
   }
 
   // Пакет: все операции одного человека для одного получателя, если он ничего не вносил последние 10 минут

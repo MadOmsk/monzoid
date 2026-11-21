@@ -430,6 +430,31 @@ describe('участники', () => {
     expect((await list()).map((r: any) => r.comment)).toEqual(['Уборка']);
   });
 
+  it('операции за конкретный день', async () => {
+    const ctx = setup();
+    const { base, fund } = await withMember(ctx);
+    await ctx.call(1, 'POST', `${base}/entries`, { date: '2026-10-05', kind: 'expense', amount: k(100), fundId: fund('Еда') });
+    await ctx.call(1, 'POST', `${base}/entries`, { date: '2026-10-06', kind: 'expense', amount: k(200), fundId: fund('Еда') });
+    const day = (await ctx.call(1, 'GET', `${base}/entries?from=2026-10&to=2026-10&day=2026-10-06`)).body;
+    expect(day.map((e: any) => e.amount)).toEqual([k(200)]);
+  });
+
+  it('платёж в валюте: сумма в валюте вклада, следующий раз сохраняет вклад, напоминание с суммой в валюте', async () => {
+    const ctx = setup();
+    const { base, fund } = await withMember(ctx);
+    const rub = (await ctx.call(1, 'POST', `${base}/pots`, { name: 'Рубли', kind: 'currency', currency: 'RUB', openingBalance: k(54_000), openingUnits: 10_000 })).body.id;
+    const remindAt = Date.parse('2026-10-08T10:00:00Z');
+    const body = { comment: 'Учёба', fundId: fund('Еда'), dueDate: '2026-10-09', remindAt, repeat: 'month' };
+    // Без суммы в валюте и из чужого вклада нельзя; сумма в основной валюте при этом не хранится
+    expect((await ctx.call(1, 'POST', `${base}/reminders`, { ...body, potId: 999, units: 20_000 })).status).toBe(404);
+    const id = (await ctx.call(1, 'POST', `${base}/reminders`, { ...body, amount: k(1), potId: rub, units: 20_000 })).body.id;
+    const list = async () => (await ctx.call(1, 'GET', `${base}/reminders`)).body;
+    expect((await list())[0]).toMatchObject({ amount: null, potId: rub, units: 20_000, potName: 'Рубли', currency: 'RUB' });
+    expect(takeNotices(ctx.db, remindAt + 1).find((n) => n.reminderId === id)?.text).toContain('20 000');
+    await ctx.call(1, 'POST', `${base}/reminders/${id}/skip`, {});
+    expect((await list())[0]).toMatchObject({ dueDate: '2026-11-09', potId: rub, units: 20_000 });
+  });
+
   it('оформление: дневная и ночная схемы и режим, чужие названия не принимаются', async () => {
     const ctx = setup();
     await withMember(ctx);
