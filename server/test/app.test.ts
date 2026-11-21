@@ -511,8 +511,9 @@ describe('основная валюта и копилки', () => {
     await call('POST', `${base}/pots`, { name: 'Apple', kind: 'stock', ticker: 'aapl', openingBalance: k(80000), openingUnits: 1 });
 
     const pots = (await call('GET', `${base}/pots`)).body;
-    expect(pots[0]).toMatchObject({ balance: k(45000), units: 100, value: k(50000), price: 500 });
-    expect(pots[1]).toMatchObject({ ticker: 'AAPL', currency: 'USD', price: 200, value: k(100000), balance: k(80000) });
+    // Вклады по убыванию стоимости: акции на 100 000 выше долларов на 50 000
+    expect(pots[0]).toMatchObject({ ticker: 'AAPL', currency: 'USD', price: 200, value: k(100000), balance: k(80000) });
+    expect(pots[1]).toMatchObject({ balance: k(45000), units: 100, value: k(50000), price: 500 });
     const { report } = (await call('GET', `${base}/summary?ym=2026-10`)).body;
     expect(report).toMatchObject({ potsAfter: k(150000), potsInvested: k(125000), freeAfter: -k(45000), totalAfter: k(105000) });
 

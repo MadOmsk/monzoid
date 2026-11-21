@@ -216,7 +216,10 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
   // Администратору видны все вкладки: на пустой можно завести первый вклад этого вида
   const present = isAdmin ? TABS : TABS.filter(([t]) => data.some((p) => tabOf(p.kind) === t));
   const current = present.some(([t]) => t === tab) ? tab : present[0]?.[0] ?? 'currency';
-  const fxCurrencies = [...new Set(data.filter((p) => p.kind === 'currency').map((p) => p.currency))].sort();
+  // Валюты в фильтре по убыванию общей стоимости вкладов в них
+  const fxCurrencies = [...data.filter((p) => p.kind === 'currency').reduce((m, p) => m.set(p.currency, (m.get(p.currency) ?? 0) + (p.value ?? p.balance)), new Map<string, number>())]
+    .sort((a, b) => b[1] - a[1])
+    .map(([c]) => c);
   const fx = current === 'currency' && fxCurrencies.includes(fxFilter) ? fxFilter : '';
   const shown = data.filter((p) => tabOf(p.kind) === current && (!fx || p.currency === fx));
   // У проданных активов стоимость 0; они не мешают итогу, но и не входят в «вложено» как действующие

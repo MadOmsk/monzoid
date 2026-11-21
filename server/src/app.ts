@@ -1279,8 +1279,10 @@ export function buildApp(options: AppOptions) {
         ledgerId,
       ).map((p) => [p.id, p]),
     );
-    // У депозита ставка, выплата и ближайшие проценты: due ждёт подтверждения
-    return valuePots(db, ledgerId).map((p) => {
+    // У депозита ставка, выплата и ближайшие проценты: due ждёт подтверждения.
+    // Вклады везде идут по убыванию стоимости (без курса по вложенному), при равной в порядке создания
+    const worth = (p: { value: number | null; balance: number }) => p.value ?? p.balance;
+    return valuePots(db, ledgerId).sort((a, b) => worth(b) - worth(a) || a.id - b.id).map((p) => {
       const d = deposits.get(p.id);
       return d?.rate ? { ...p, rate: d.rate, payout: d.payout, rateFrom: d.rateFrom, payoutFirst: d.payoutFirst, interest: nextInterest(db, p.id, today) } : p;
     });
