@@ -185,7 +185,7 @@ input.check { width: 20px; height: 20px; padding: 0; margin: 0; accent-color: va
 .entry-tags { color: var(--link); overflow-wrap: anywhere; }
 
 .tag-rank { display: flex; flex-direction: column; gap: 6px; }
-.tag-rank li > button { display: block; width: 100%; background: var(--card); border-radius: 12px; padding: 10px 12px; }
+.tag-rank li > button, .tag-rank .static { display: block; width: 100%; background: var(--card); border-radius: 12px; padding: 10px 12px; }
 .rank-row { background: var(--card); border-radius: 12px; padding: 10px 12px; }
 .simple-list li.pot-row { display: block; }
 .cell-delta { font-size: 12px; margin-top: 2px; }
@@ -328,7 +328,7 @@ tbody th { font-weight: 500; }
 :root[data-design='unlocked'] .tile, :root[data-design='unlocked'] .chart { padding: 16px 18px; }
 :root[data-design='unlocked'] .section summary, :root[data-design='unlocked'] .section-link { padding: 16px 18px; font-weight: 700; }
 :root[data-design='unlocked'] .entry-list li > button, :root[data-design='unlocked'] .entry-list .static, :root[data-design='unlocked'] .fund-list li > button,
-:root[data-design='unlocked'] .tag-rank li > button, :root[data-design='unlocked'] .rank-row, :root[data-design='unlocked'] .review-card { border-radius: 22px; padding: 12px 16px; }
+:root[data-design='unlocked'] .tag-rank li > button, :root[data-design='unlocked'] .tag-rank .static, :root[data-design='unlocked'] .rank-row, :root[data-design='unlocked'] .review-card { border-radius: 22px; padding: 12px 16px; }
 :root[data-design='unlocked'] .entry-title, :root[data-design='unlocked'] .tile strong { font-weight: 700; }
 :root[data-design='unlocked'] .segmented { border-radius: 999px; padding: 4px; background: var(--card); }
 :root[data-design='unlocked'] .segmented button { border-radius: 999px; }
@@ -354,7 +354,7 @@ tbody th { font-weight: 500; }
 :root[data-design='mono'] .tile, :root[data-design='mono'] .facts, :root[data-design='mono'] .section, :root[data-design='mono'] .section-link,
 :root[data-design='mono'] .check-row, :root[data-design='mono'] .chart, :root[data-design='mono'] .table-wrap, :root[data-design='mono'] .banner,
 :root[data-design='mono'] .entry-list li > button, :root[data-design='mono'] .entry-list .static, :root[data-design='mono'] .fund-list li > button,
-:root[data-design='mono'] .tag-rank li > button, :root[data-design='mono'] .rank-row, :root[data-design='mono'] .review-card { border-radius: 0; box-shadow: inset 0 0 0 1.5px var(--m-line); }
+:root[data-design='mono'] .tag-rank li > button, :root[data-design='mono'] .tag-rank .static, :root[data-design='mono'] .rank-row, :root[data-design='mono'] .review-card { border-radius: 0; box-shadow: inset 0 0 0 1.5px var(--m-line); }
 :root[data-design='mono'] .tile > span, :root[data-design='mono'] .tile small, :root[data-design='mono'] .field > span { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; }
 :root[data-design='mono'] input, :root[data-design='mono'] select, :root[data-design='mono'] .fund-current { border-radius: 0; border: 1.5px solid var(--m-line); font-family: inherit; }
 :root[data-design='mono'] .btn, :root[data-design='mono'] .btn.small { border-radius: 0; border: 2px solid var(--text); text-transform: uppercase; letter-spacing: .05em; font-weight: 700; }
@@ -389,7 +389,7 @@ tbody th { font-weight: 500; }
 :root[data-design='journal'] .tile.hero strong { font-size: 36px; }
 :root[data-design='journal'] .tile > span, :root[data-design='journal'] .tile small { font-style: italic; }
 :root[data-design='journal'] .entry-list li > button, :root[data-design='journal'] .entry-list .static, :root[data-design='journal'] .fund-list li > button,
-:root[data-design='journal'] .tag-rank li > button, :root[data-design='journal'] .rank-row, :root[data-design='journal'] .review-card { background: transparent; border-radius: 0; border-bottom: 1px solid var(--line); }
+:root[data-design='journal'] .tag-rank li > button, :root[data-design='journal'] .tag-rank .static, :root[data-design='journal'] .rank-row, :root[data-design='journal'] .review-card { background: transparent; border-radius: 0; border-bottom: 1px solid var(--line); }
 :root[data-design='journal'] .entry-title { font-weight: 700; }
 :root[data-design='journal'] input, :root[data-design='journal'] select, :root[data-design='journal'] .fund-current { background: transparent; border: 0; border-bottom: 1px solid var(--muted); border-radius: 0; padding-left: 0; padding-right: 0; font-family: inherit; }
 :root[data-design='journal'] .btn, :root[data-design='journal'] .btn.small { border-radius: 2px; background: transparent; border: 1px solid var(--text); font-weight: 600; }
@@ -449,7 +449,7 @@ tbody th { font-weight: 500; }
 :root[data-design='soft'] .tile, :root[data-design='soft'] .facts, :root[data-design='soft'] .section, :root[data-design='soft'] .section-link,
 :root[data-design='soft'] .check-row, :root[data-design='soft'] .chart, :root[data-design='soft'] .table-wrap, :root[data-design='soft'] .banner,
 :root[data-design='soft'] .entry-list li > button, :root[data-design='soft'] .entry-list .static, :root[data-design='soft'] .fund-list li > button,
-:root[data-design='soft'] .tag-rank li > button, :root[data-design='soft'] .rank-row, :root[data-design='soft'] .review-card, :root[data-design='soft'] .reminder.due { border-radius: 22px; border-color: transparent; box-shadow: var(--s-shadow); }
+:root[data-design='soft'] .tag-rank li > button, :root[data-design='soft'] .tag-rank .static, :root[data-design='soft'] .rank-row, :root[data-design='soft'] .review-card, :root[data-design='soft'] .reminder.due { border-radius: 22px; border-color: transparent; box-shadow: var(--s-shadow); }
 :root[data-design='soft'] .banner { border-left-width: 0; }
 :root[data-design='soft'] input, :root[data-design='soft'] select, :root[data-design='soft'] .fund-current { border-radius: 16px; border-color: transparent; background: color-mix(in srgb, var(--muted) 10%, var(--card)); }
 :root[data-design='soft'] .btn { border-radius: 16px; border-color: transparent; background: var(--s-tonal); font-weight: 700; }
@@ -472,7 +472,7 @@ tbody th { font-weight: 500; }
 :root[data-design='compact'] .table-wrap, :root[data-design='compact'] .banner { border-radius: 8px; }
 :root[data-design='compact'] .section-link { padding: 9px 12px; }
 :root[data-design='compact'] .entry-list li > button, :root[data-design='compact'] .entry-list .static, :root[data-design='compact'] .fund-list li > button,
-:root[data-design='compact'] .tag-rank li > button, :root[data-design='compact'] .review-card { border-radius: 6px; padding: 6px 10px; font-size: 14px; }
+:root[data-design='compact'] .tag-rank li > button, :root[data-design='compact'] .tag-rank .static, :root[data-design='compact'] .review-card { border-radius: 6px; padding: 6px 10px; font-size: 14px; }
 :root[data-design='compact'] .entry-list, :root[data-design='compact'] .fund-list { gap: 4px; }
 :root[data-design='compact'] input, :root[data-design='compact'] select, :root[data-design='compact'] .fund-current { padding: 8px 10px; font-size: 15px; border-radius: 6px; }
 :root[data-design='compact'] .btn { padding: 9px 12px; border-radius: 6px; font-size: 14px; }
@@ -503,7 +503,7 @@ tbody th { font-weight: 500; }
 :root[data-design='bank'] .tile.hero .positive, :root[data-design='bank'] .tile.hero .negative, :root[data-design='bank'] .tiles > .tile.full:first-child .positive, :root[data-design='bank'] .tiles > .tile.full:first-child .negative { color: inherit; font-weight: 700; }
 /* Списки: один блок, строки через тонкую линию */
 :root[data-design='bank'] .entry-list, :root[data-design='bank'] .fund-list, :root[data-design='bank'] .tag-rank { gap: 0; background: var(--card); border-radius: 20px; overflow: hidden; box-shadow: var(--b-shadow); }
-:root[data-design='bank'] .entry-list li > button, :root[data-design='bank'] .entry-list .static, :root[data-design='bank'] .fund-list li > button, :root[data-design='bank'] .tag-rank li > button { border-radius: 0; background: transparent; padding: 13px 16px; box-shadow: none; }
+:root[data-design='bank'] .entry-list li > button, :root[data-design='bank'] .entry-list .static, :root[data-design='bank'] .fund-list li > button, :root[data-design='bank'] .tag-rank li > button, :root[data-design='bank'] .tag-rank .static { border-radius: 0; background: transparent; padding: 13px 16px; box-shadow: none; }
 :root[data-design='bank'] .entry-list li + li, :root[data-design='bank'] .fund-list li + li, :root[data-design='bank'] .tag-rank li + li { border-top: 1px solid var(--line); }
 :root[data-design='bank'] .entry-title { font-weight: 600; }
 :root[data-design='bank'] .entry-main b, :root[data-design='bank'] .fund-top b { font-weight: 800; }

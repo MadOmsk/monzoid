@@ -45,16 +45,17 @@ function Gain({ gain, ratio }: { gain: number; ratio: number }) {
   return <span className={tone(gain)}>{signed(gain)} · {percent(ratio)}</span>;
 }
 
-/** Подвкладка вкладов: валюта, акции или активы (вместе с деньгами в основной валюте, например от сделок). */
-type Tab = 'currency' | 'stock' | 'asset';
-const TABS: [Tab, string][] = [['currency', 'Валюта'], ['stock', 'Акции'], ['asset', 'Активы']];
-const tabOf = (kind: Pot['kind']): Tab => (kind === 'cash' ? 'asset' : kind);
+/** Подвкладка вкладов: валюта, акции, депозиты (все вклады в основной валюте, в том числе деньги от сделок) или активы. */
+type Tab = Pot['kind'];
+const TABS: [Tab, string][] = [['cash', 'Депозиты'], ['currency', 'Валюта'], ['stock', 'Акции'], ['asset', 'Активы']];
+const tabOf = (kind: Pot['kind']): Tab => kind;
 /** Стоимость и вложенное подвкладки на конец месяца из отчёта */
 function monthSlice(m: MonthReport, tab: Tab) {
   if (tab === 'currency') return { value: m.currencyAfter, invested: m.currencyInvested };
   if (tab === 'stock') return { value: m.stocksAfter, invested: m.stocksInvested };
   // Деньги в основной валюте стоят столько, сколько вложено
-  return { value: m.assetsAfter + m.cashInvested, invested: m.assetsInvested + m.cashInvested };
+  if (tab === 'cash') return { value: m.cashInvested, invested: m.cashInvested };
+  return { value: m.assetsAfter, invested: m.assetsInvested };
 }
 
 /**
@@ -98,7 +99,7 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
   const { data, error, reload } = useLoad<Pot[]>(`${base}/pots`);
   const [openId, setOpenId] = useState<number | null>(null);
   const [showSold, setShowSold] = useState(false);
-  const [tab, setTab] = useRemembered<Tab>(`${base}:potsTab`, 'currency');
+  const [tab, setTab] = useRemembered<Tab>(`${base}:potsTab`, 'cash');
   useBack(openId !== null, 2, () => setOpenId(null));
 
   if (error) return <Banner kind="error">{error}</Banner>;
@@ -117,7 +118,7 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
   const days = shown.flatMap((p) => (p.day ? [p.day] : []));
   const day = days.length ? { gain: days.reduce((s, d) => s + d.gain, 0), since: days.map((d) => d.since).sort()[0] } : null;
   const dates = [...new Set(shown.flatMap((p) => (p.rateDate ? [p.rateDate] : [])))].sort();
-  const valueTitle = current === 'currency' ? 'Стоимость валюты' : current === 'stock' ? 'Стоимость акций' : 'Стоимость активов';
+  const valueTitle = { currency: 'Стоимость валюты', stock: 'Стоимость акций', cash: 'На депозитах', asset: 'Стоимость активов' }[current];
   return (
     <>
       {data.length === 0 && <p className="muted">Вкладов пока нет. Их можно завести ниже на каждой вкладке: валюту, акции, активы вроде квартиры и машины или деньги в основной валюте.</p>}
@@ -133,9 +134,10 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
           <div className="tile full">
             <span>{valueTitle}</span>
             <strong>{money(sum.value)}</strong>
-            <small>{current === 'asset' ? 'уплачено' : 'вложено'} {money(sum.invested)}</small>
+            {current !== 'cash' && <small>{current === 'asset' ? 'уплачено' : 'вложено'} {money(sum.invested)}</small>}
           </div>
-          <div className="tile full">
+          {/* Проценты по депозитам лежат во вкладе как вложение, поэтому «дохода» к вложенному у них нет */}
+          {current !== 'cash' && <div className="tile full">
             <span>{current === 'asset' ? 'Изменение оценки' : 'Доход'}</span>
             <dl className="period-gains">
               {day && (
@@ -155,7 +157,7 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
                 <dd className={tone(sum.gain)}>{signed(sum.gain)}{sum.invested > 0 && <span className="muted"> · {percent(sum.ratio)}</span>}</dd>
               </div>
             </dl>
-          </div>
+          </div>}
         </div>
       )}
       {KIND_TITLES.filter(([kind]) => tabOf(kind) === current).map(([kind, title]) => {
@@ -167,7 +169,6 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
         const sum = totals(group);
         return (
           <section key={kind} className="pot-group">
-            {current === 'asset' && <div className="fund-top"><h2>{title}</h2><b>{money(sum.value)}</b></div>}
             {kind === 'asset' && <small className="muted pot-group-sum">Покупка и продажа не входят в доходы и расходы, стоимость задаётся оценкой</small>}
 
             <ul className="tag-rank">
@@ -278,6 +279,7 @@ function PotDetail({ base, pot, isAdmin, onChanged, onBack, onOpenPot }: { base:
           {isAdmin && (pot.kind === 'stock' && pot.ticker
             ? <StockTrade base={base} pots={[pot]} fixed={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />
             : <PotMove base={base} pot={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />)}
+          <h2>История</h2>
           <Deals base={base} pot={pot} moves={data.moves} unit={unit} isAdmin={isAdmin} onOpenPot={onOpenPot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />
         </>
       )}
@@ -429,6 +431,7 @@ function AssetDetail({ base, pot, isAdmin, userId, ym, onChanged, onBack }: { ba
       {isAdmin && <OpeningEditor base={base} pot={pot} onChanged={dealsChanged} />}
       {deals.error && <Banner kind="error">{deals.error}</Banner>}
       {deals.data?.moves.length === 0 && <p className="muted">Сделок нет: актив был до начала учёта.</p>}
+      {!!deals.data?.moves.length && <h2>История сделок</h2>}
       {!!deals.data?.moves.length && <Deals base={base} pot={pot} moves={deals.data.moves} unit={symbol()} isAdmin={isAdmin} onChanged={dealsChanged} />}
     </>
   );
@@ -702,6 +705,7 @@ function dealTitle(pot: Pot, m: PotQuotes['moves'][number]): string {
   if (m.units > 0) return 'Покупка';
   if (m.units < 0) return 'Продажа';
   if (pot.kind === 'asset') return m.amount > 0 ? 'Вложение' : 'Возврат';
+  if (m.linked && !m.salePotId) return 'Проценты';
   return m.amount > 0 ? 'Перевод во вклад' : 'Вывод из вклада';
 }
 
@@ -794,12 +798,12 @@ function Deals({ base, pot, moves, unit, isAdmin, onOpenPot, onChanged }: {
       {[...moves].reverse().map((m) => {
         const body = (
           <>
-            <div className="fund-top"><span className="entry-title">{dealTitle(pot, m)}</span><b>{money(Math.abs(m.amount))}</b></div>
+            <div className="fund-top"><span className="entry-title">{dealTitle(pot, m)}</span><b>{signed(m.amount)}</b></div>
             <div className="fund-bottom muted small">
               <span>
                 {shortDate(m.date)}{m.comment && ` · ${m.comment}`}
                 {m.toPotId && ` · деньги во вклад «${cashPots.find((p) => p.id === m.toPotId)?.name ?? '…'}»`}
-                {m.linked && ' · по продаже актива, меняется в его карточке'}
+                {m.linked && (m.salePotId ? ' · по продаже актива, меняется в его карточке' : ' · проценты, меняются в операции дохода')}
               </span>
               {counted && m.units !== 0 && <span>{amount(Math.abs(m.units), 4)}{m.price !== null && ` по ${amount(m.price)} ${unit}`}</span>}
             </div>
@@ -1169,7 +1173,7 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
       {error && <Banner kind="error">{error}</Banner>}
       {tab !== 'stock' && pots.length > 0 && (
         <details className="section">
-          <summary>{tab === 'currency' ? 'Купить или продать валюту' : 'Купить или продать актив'}</summary>
+          <summary>{tab === 'currency' ? 'Купить или продать валюту' : tab === 'cash' ? 'Положить или забрать' : 'Купить или продать актив'}</summary>
           <div className="section-body">
             <p className="muted small">Покупка забирает деньги из свободных средств, продажа возвращает их туда. В доходы и расходы сделка не попадает. То же можно сделать в карточке вклада.</p>
             <select aria-label="Вклад" value={pot} onChange={(e) => setPot(e.target.value ? Number(e.target.value) : '')}>
@@ -1183,15 +1187,10 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
         </details>
       )}
       <details className="section">
-        <summary>{tab === 'currency' ? 'Новый вклад в валюте' : tab === 'stock' ? 'Новые акции' : 'Новый актив'}</summary>
+        <summary>{{ currency: 'Новый вклад в валюте', stock: 'Новые акции', cash: 'Новый депозит', asset: 'Новый актив' }[tab]}</summary>
         <div className="section-body">
+          {tab === 'cash' && <p className="muted small">Депозит, накопительный счёт или просто отложенные деньги в основной валюте. Ставку и выплату процентов можно указать в карточке вклада.</p>}
           <div className="inline-form wrap">
-            {tab === 'asset' && (
-              <select aria-label="Тип" value={kind} onChange={(e) => setKind(e.target.value as Pot['kind'])}>
-                <option value="asset">Актив: недвижимость, машина</option>
-                <option value="cash">Деньги в основной валюте</option>
-              </select>
-            )}
             <input aria-label="Название вклада" placeholder="Название" value={name} onChange={(e) => setName(e.target.value)} />
             {kind === 'currency' && (
               <select aria-label="Валюта" value={currency} onChange={(e) => setCurrency(e.target.value)}>
