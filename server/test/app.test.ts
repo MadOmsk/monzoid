@@ -885,6 +885,20 @@ describe('основная валюта и копилки', () => {
     expect(cash.moves[0].price).toBe(440);
   });
 
+  it('курс на дату обновления берётся из базы, без запроса в Нацбанк', async () => {
+    let asked = 0;
+    const source = market({ ratesOn: async (): Promise<Record<string, number>> => { asked++; return { USD: 999 }; } });
+    const { db, call } = start(source);
+    await refreshMarket(db, source, '2026-11-02');
+    const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2026-10' })).body.id}`;
+    expect((await call('GET', `${base}/market/price?date=2026-11-02&currency=USD`)).body).toMatchObject({ rate: 500, rateOnDate: true });
+    expect((await call('GET', `${base}/market/price?date=2026-11-02&currency=EUR`)).body.rate).toBeCloseTo(500 / 0.9);
+    expect(asked).toBe(0);
+    // На дату, которой в базе нет, курс спрашивается у Нацбанка
+    expect((await call('GET', `${base}/market/price?date=2026-10-15&currency=USD`)).body).toMatchObject({ rate: 999, rateOnDate: true });
+    expect(asked).toBe(1);
+  });
+
   it('цена на дату для формы сделки: курс валюты и закрытие акции не позже даты', async () => {
     const source = market({
       ratesOn: async (date): Promise<Record<string, number>> => (date === '2026-10-03' ? { USD: 480 } : {}),

@@ -119,6 +119,13 @@ export async function refreshMarket(db: Db, source: MarketSource, today: string)
       for (const [currency, rate] of Object.entries(perUsd)) {
         run(db, 'INSERT INTO fx_rates (currency, per_usd, date) VALUES (?, ?, ?) ON CONFLICT (currency) DO UPDATE SET per_usd = excluded.per_usd, date = excluded.date', currency, rate, date);
       }
+      // Ежедневное обновление (Нацбанк) идёт и в курсы по датам: формы сделок берут курс на дату из базы
+      // и идут в Нацбанк, только если его там нет. Уже загруженные на эту дату курсы не перезаписываются
+      if (perUsd.KZT) {
+        for (const [currency, rate] of Object.entries(perUsd)) {
+          if (rate > 0) run(db, 'INSERT OR IGNORE INTO fx_history (date, currency, kzt_per_unit) VALUES (?, ?, ?)', date, currency, perUsd.KZT / rate);
+        }
+      }
     });
   } catch (e) {
     console.error('Курсы не обновились:', e);
