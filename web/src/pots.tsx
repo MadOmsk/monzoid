@@ -118,6 +118,12 @@ function percent(ratio: number): string {
   return `${ratio > 0 ? '+' : ''}${text}%`;
 }
 
+/** Крупный знак валюты вклада: ₸ у депозитов, $ € ₽ у валюты, валюта котировки у акций. */
+function PotCurrency({ pot }: { pot: Pot }) {
+  const sign = symbol(pot.kind === 'cash' ? undefined : pot.currency);
+  return <span className="pot-cur" title={pot.currency} aria-hidden>{sign}</span>;
+}
+
 function potFacts(p: Pot): string {
   if (p.kind === 'stock') return `${p.ticker} · ${amount(p.units, 4)} шт.${p.price !== null ? ` · ${amount(p.price)} ${symbol(p.currency)}` : ''}`;
   if (p.kind === 'currency') return `${amount(p.units)} ${symbol(p.currency)}${p.price !== null ? ` · курс ${amount(p.price)}` : ''}`;
@@ -197,6 +203,8 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
   const [openId, setOpenId] = useState<number | null>(null);
   const [showSold, setShowSold] = useState(false);
   const [tab, setTab] = useRemembered<Tab>(`${base}:potsTab`, 'cash');
+  // Фильтр по валюте на вкладке «Валюта»: '' значит все
+  const [fxFilter, setFxFilter] = useRemembered<string>(`${base}:potsFx`, '');
   useBack(openId !== null, 2, () => setOpenId(null));
 
   if (error) return <Banner kind="error">{error}</Banner>;
@@ -208,7 +216,9 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
   // Администратору видны все вкладки: на пустой можно завести первый вклад этого вида
   const present = isAdmin ? TABS : TABS.filter(([t]) => data.some((p) => tabOf(p.kind) === t));
   const current = present.some(([t]) => t === tab) ? tab : present[0]?.[0] ?? 'currency';
-  const shown = data.filter((p) => tabOf(p.kind) === current);
+  const fxCurrencies = [...new Set(data.filter((p) => p.kind === 'currency').map((p) => p.currency))].sort();
+  const fx = current === 'currency' && fxCurrencies.includes(fxFilter) ? fxFilter : '';
+  const shown = data.filter((p) => tabOf(p.kind) === current && (!fx || p.currency === fx));
   // У проданных активов стоимость 0; они не мешают итогу, но и не входят в «вложено» как действующие
   const sum = totals(shown);
   // За день: только вклады с котировкой за два дня; дата самая ранняя из них
@@ -226,6 +236,9 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
         </button>
       ))}
       {present.length > 1 && <div className="sticky-head"><Segmented<Tab> value={current} options={present} onChange={setTab} /></div>}
+      {current === 'currency' && fxCurrencies.length > 1 && (
+        <Segmented<string> value={fx} options={[['', 'Все'], ...fxCurrencies.map((c): [string, string] => [c, `${symbol(c)} ${c}`])]} onChange={setFxFilter} />
+      )}
       {shown.length > 0 && (
         <div className="tiles">
           <div className="tile full">
@@ -243,7 +256,8 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
                   <dd className={tone(day.gain)}>{signed(day.gain)}{sum.value - day.gain > 0 && <span className="muted"> · {percent(day.gain / (sum.value - day.gain))}</span>}</dd>
                 </div>
               )}
-              {periodGains(months, sum, currentYm, current).map((g) => (
+              {/* Итоги по месяцам считаются по всей валюте, поэтому при фильтре по одной валюте их нет */}
+              {(fx ? [] : periodGains(months, sum, currentYm, current)).map((g) => (
                 <div key={g.label}>
                   <dt>{g.label} <span className="muted">с {g.since}</span></dt>
                   <dd className={tone(g.gain)}>{signed(g.gain)}{g.ratio !== null && <span className="muted"> · {percent(g.ratio)}</span>}</dd>
@@ -258,7 +272,7 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
         </div>
       )}
       {KIND_TITLES.filter(([kind]) => tabOf(kind) === current).map(([kind, title]) => {
-        const all = data.filter((p) => p.kind === kind);
+        const all = data.filter((p) => p.kind === kind && (!fx || p.currency === fx));
         // Проданные активы стоят 0 и только мешают; их можно показать кнопкой
         const sold = kind === 'asset' ? all.filter((p) => p.units <= 0) : [];
         const group = showSold ? all : all.filter((p) => !sold.includes(p));
@@ -273,17 +287,20 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
                 const gain = p.value !== null ? p.value - p.balance : 0;
                 const value = p.value !== null ? money(p.value) : 'нет курса';
                 // У валюты сверху количество в её валюте, под ним стоимость в основной
-                const fx = p.kind === 'currency';
+                const isFx = p.kind === 'currency';
                 return (
                   <li key={p.id}>
-                    <button type="button" onClick={() => { setOpenId(p.id); window.scrollTo(0, 0); }}>
-                      <div className="fund-top"><span className="entry-title">{p.name}</span><b>{fx ? `${amount(p.units)} ${symbol(p.currency)}` : value}</b></div>
-                      <div className="fund-bottom muted">
-                        <span>{fx ? (p.price !== null ? `курс ${amount(p.price)}` : '') : potFacts(p)}</span>
-                        {fx && <span className="pot-value">{value}</span>}
+                    <button type="button" className="pot-row" onClick={() => { setOpenId(p.id); window.scrollTo(0, 0); }}>
+                      {p.kind !== 'asset' && <PotCurrency pot={p} />}
+                      <div className="pot-body">
+                        <div className="fund-top"><span className="entry-title">{p.name}</span><b>{isFx ? `${amount(p.units)}\u00a0${symbol(p.currency)}` : value}</b></div>
+                        <div className="fund-bottom muted">
+                          <span>{isFx ? (p.price !== null ? `курс ${amount(p.price)}` : '') : potFacts(p)}</span>
+                          {isFx && <span className="pot-value">{value}</span>}
+                        </div>
+                        {p.kind === 'asset' && p.units > 0 && <div className="fund-bottom muted"><span>уплачено {money(p.balance)}</span></div>}
+                        {p.kind !== 'cash' && p.kind !== 'asset' && <div className="fund-bottom muted"><span>вложено {money(p.balance)}{p.balance > 0 && <> · <Gain gain={gain} ratio={gain / p.balance} /></>}</span></div>}
                       </div>
-                      {p.kind === 'asset' && p.units > 0 && <div className="fund-bottom muted"><span>уплачено {money(p.balance)}</span></div>}
-                      {p.kind !== 'cash' && p.kind !== 'asset' && <div className="fund-bottom muted"><span>вложено {money(p.balance)}{p.balance > 0 && <> · <Gain gain={gain} ratio={gain / p.balance} /></>}</span></div>}
                     </button>
                   </li>
                 );
@@ -331,13 +348,18 @@ function PotDetail({ base, pot, isAdmin, onChanged, onBack, onOpenPot }: { base:
       {pot.kind === 'currency' || pot.kind === 'stock' ? (
         // Сколько валюты или акций: главное в карточке, крупно; курс или цена под ним
         <div className="pot-headline">
+          <PotCurrency pot={pot} />
           <strong>{pot.kind === 'stock' ? `${amount(pot.units, 4)} шт.` : `${amount(pot.units)} ${symbol(pot.currency)}`}</strong>
           {pot.price !== null && (
             <span>{pot.kind === 'stock' ? `${pot.ticker} · ${amount(pot.price)} ${symbol(pot.currency)} за штуку` : `курс ${amount(pot.price)} ${symbol()} за 1 ${symbol(pot.currency)}`}</span>
           )}
         </div>
       ) : (
-        <p className="muted small">{potFacts(pot)}</p>
+        <div className="pot-headline">
+          <PotCurrency pot={pot} />
+          <strong>{money(pot.value ?? pot.balance)}</strong>
+          <span>{potFacts(pot)}</span>
+        </div>
       )}
       {isAdmin && <RenamePot base={base} pot={pot} onChanged={onChanged} />}
       {isAdmin && data && !data.moves.length && pot.balance === 0 && pot.units === 0 && <DeletePot base={base} pot={pot} onDeleted={async () => { onBack(); await onChanged(); }} />}

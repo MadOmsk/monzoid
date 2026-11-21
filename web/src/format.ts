@@ -23,7 +23,7 @@ export function symbol(code?: string): string {
 
 /** Суммы приходят в сотых долях валюты, на экране округляются до целых. */
 export function money(tiyn: number): string {
-  return `${number.format(Math.round(tiyn / 100)).replace('-', '−')} ${baseSymbol}`;
+  return `${number.format(Math.round(tiyn / 100)).replace('-', '−')}\u00a0${baseSymbol}`;
 }
 
 /** Для таблиц, где знак валюты вынесен в заголовок. */
@@ -37,11 +37,11 @@ export function signedCell(tiyn: number): string {
 
 /** То же со знаком валюты. */
 export function moneyRounded(tiyn: number): string {
-  return `${cell(tiyn)} ${baseSymbol}`;
+  return `${cell(tiyn)}\u00a0${baseSymbol}`;
 }
 
 export function signedRounded(tiyn: number): string {
-  return `${signedCell(tiyn)} ${baseSymbol}`;
+  return `${signedCell(tiyn)}\u00a0${baseSymbol}`;
 }
 
 /** Класс цвета для остатка или дельты: минус красный, плюс зелёный, ноль без цвета. */

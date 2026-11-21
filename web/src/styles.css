@@ -122,7 +122,16 @@ input.amount { font-size: 26px; font-weight: 600; }
 .tile > span, .tile small { color: var(--muted); font-size: 13px; }
 .tile strong { font-size: 18px; overflow-wrap: anywhere; }
 /* Количество валюты или акций в карточке вклада: крупно, курс под ним */
-.pot-headline { display: flex; flex-direction: column; gap: 2px; }
+.pot-headline { display: grid; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 2px; align-items: center; }
+.pot-headline .pot-cur { grid-row: span 2; }
+.pot-headline > strong, .pot-headline > span:not(.pot-cur) { grid-column: 2; }
+/* Знак валюты вклада: крупный кружок слева */
+.pot-cur { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 42px; height: 42px; border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-size: 22px; font-weight: 700; line-height: 1; }
+.tag-rank li > button.pot-row { display: flex; gap: 12px; align-items: center; text-align: left; }
+.pot-row .pot-body { flex: 1; min-width: 0; }
+/* Сумма справа не переносится: «30 000 000 ₸» остаётся одной строкой, переносится название */
+.fund-top b, .entry-main b { white-space: nowrap; }
 .pot-headline strong { font-size: 28px; line-height: 1.15; overflow-wrap: anywhere; }
 .pot-headline span { color: var(--muted); font-size: 15px; }
 .tile.hero, .tile.full { grid-column: 1 / -1; }
