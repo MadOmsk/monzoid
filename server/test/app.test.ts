@@ -8,7 +8,7 @@ import { openDb } from '../src/db.js';
 import { paceAlerts } from '../src/domain.js';
 import { createImportFromRows } from '../src/imports.js';
 import { BATCH_QUIET_MS, reminderAction, takeNotices } from '../src/notify.js';
-import { backfillPotPrices, refreshMarket, type MarketSource } from '../src/market.js';
+import { backfillPotPrices, backfillRates, ensureRatesOn, freshenMarket, refreshMarket, type MarketSource } from '../src/market.js';
 import { nextInterest } from '../src/interest.js';
 import { suggestActions, merchantKey } from '../src/statements/classify.js';
 import { parseStatement, type StatementRow } from '../src/statements/parse.js';
@@ -883,6 +883,75 @@ describe('основная валюта и копилки', () => {
     expect(cash.points).toHaveLength(105);
     expect(cash.points[0].price).toBe(450);
     expect(cash.moves[0].price).toBe(440);
+  });
+
+  it('курсы с начала учёта по дням: при недоступном Нацбанке ждут следующего обновления, пустые даты не спрашиваются снова', async () => {
+    const asked: string[] = [];
+    let down = true;
+    const source = market({
+      ratesOn: async (date): Promise<Record<string, number>> => {
+        asked.push(date);
+        if (down) throw new Error('нет доступа');
+        return date === '2026-10-04' ? {} : { USD: 470 };
+      },
+    });
+    const { db, call } = start(source);
+    const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2026-10' })).body.id}`;
+    await call('POST', `${base}/pots`, { name: 'Доллары', kind: 'currency', currency: 'USD' });
+    await backfillRates(db, source, '2026-11-02');
+    const days = () => (db.prepare(`SELECT COUNT(*) n FROM fx_history WHERE currency = 'KZT'`).get() as { n: number }).n;
+    expect(days()).toBe(0);
+    // Утреннее обновление при восстановленном доступе догружает очередь: все дни с 1 октября, кроме пустого
+    down = false;
+    expect(await refreshMarket(db, source, '2026-11-02')).toBe(true);
+    expect(days()).toBe(31 + 2 - 1);
+    // Повторно ничего не спрашивается: ни загруженные дни, ни день, на который курсов нет
+    asked.length = 0;
+    await backfillRates(db, source, '2026-11-02');
+    expect(await ensureRatesOn(db, source, '2026-10-04')).toBe(false);
+    expect(asked).toEqual([]);
+  });
+
+  it('дневные цены акции хранятся в базе и у источника не запрашиваются повторно', async () => {
+    let daily = 0;
+    const source = market({
+      daily: async () => {
+        daily++;
+        return { currency: 'USD', closes: [{ date: '2026-10-01', price: 180 }, { date: '2026-10-02', price: 185 }] };
+      },
+    });
+    const { db, call } = start(source);
+    await refreshMarket(db, source, '2026-11-02');
+    const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2026-10' })).body.id}`;
+    await call('POST', `${base}/pots`, { name: 'Apple', kind: 'stock', ticker: 'AAPL' });
+    expect((await call('GET', `${base}/market/price?date=2026-10-02&ticker=AAPL`)).body).toMatchObject({ price: 185 });
+    expect((await call('GET', `${base}/market/price?date=2026-10-01&ticker=AAPL`)).body).toMatchObject({ price: 180 });
+    expect(daily).toBe(1);
+    // Утреннее обновление обновляет и дневные цены отслеживаемых акций
+    await refreshMarket(db, source, '2026-11-03');
+    expect(daily).toBe(2);
+  });
+
+  it('обновление раз в день: после удачного сегодня больше не запускается, после сбоя не чаще раза в 15 минут', async () => {
+    let calls = 0;
+    let fail = true;
+    const source = market({
+      rates: async () => {
+        calls++;
+        if (fail) throw new Error('нет доступа');
+        return { date: '2026-11-02', perUsd: { USD: 1, KZT: 500 } };
+      },
+    });
+    const db = openDb(':memory:');
+    await freshenMarket(db, source, true);
+    expect(calls).toBe(1);
+    // Заход в приложение сразу после сбоя: рано
+    expect(freshenMarket(db, source)).toBeNull();
+    // Утренний запуск идёт всегда; удачный отмечает день
+    fail = false;
+    expect(await freshenMarket(db, source, true)).toBe(true);
+    expect(freshenMarket(db, source, true)).toBeNull();
+    expect(calls).toBe(2);
   });
 
   it('курс на дату обновления берётся из базы, без запроса в Нацбанк', async () => {

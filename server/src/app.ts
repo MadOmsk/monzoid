@@ -15,7 +15,7 @@ import { applyDecisions, createImport, getImport, listOpenImports, listSentImpor
 import { listQueue, processQueue, removeQueued } from './queue.js';
 import { syncProceeds } from './proceeds.js';
 import { nextInterest, PAYOUTS, saveDeposit, type Payout } from './interest.js';
-import { backfillPotPrices, convert, ensureRatesOn, potQuotes, rateOn, saveQuote, stockPriceOn, valuePots, type MarketSource } from './market.js';
+import { backfillPotPrices, backfillRates, convert, ensureRatesOn, freshenMarket, potQuotes, rateOn, saveQuote, stockPriceOn, valuePots, type MarketSource } from './market.js';
 import type { FundSuggester } from './statements/ai.js';
 import { noteEntries, noteSettlement, scheduleNext, seriesFields, skipReminder } from './notify.js';
 import { checkRefund, checkRefunded } from './refunds.js';
@@ -31,6 +31,8 @@ export interface AppOptions {
   devAuth?: boolean;
   suggestFunds: FundSuggester;
   market?: MarketSource;
+  /** Если утреннее обновление курсов не удалось, повторять его при заходе в приложение (в тестах выключено) */
+  marketRetry?: boolean;
   webDist?: string;
   /** Отправка копии базы файлом в Telegram; без неё ручная отправка недоступна */
   sendDocument?: DocumentSender;
@@ -185,6 +187,11 @@ export function buildApp(options: AppOptions) {
 
   // Номера изменений журнала за этот запрос; клиент по ним предлагает «Отменить»
   app.addHook('onRequest', (_req, _reply, done) => requestChanges.run([], done));
+  // Курсы и котировки читаются из базы. Если сегодня их обновить не удалось, заход в приложение запускает
+  // новую попытку в фоне, а пока везде вчерашние значения
+  app.addHook('onRequest', async (req) => {
+    if (options.market && options.marketRetry && req.method === 'GET' && req.url.startsWith('/api/ledgers/')) void freshenMarket(db, options.market);
+  });
   app.addHook('onSend', async (_req, reply, payload) => {
     const ids = requestChanges.getStore();
     if (ids?.length && reply.statusCode < 400) reply.header('X-Change-Id', ids.join(','));
@@ -1332,12 +1339,7 @@ export function buildApp(options: AppOptions) {
       if (!body.ticker) throw new DomainError('Укажи тикер акции.');
       if (!options.market) throw new DomainError('Котировки недоступны.');
       ticker = body.ticker;
-      const quote = await options.market.quote(ticker).catch(() => {
-        throw new DomainError('Не удалось получить котировку. Попробуй позже.', 502);
-      });
-      if (!quote) throw new DomainError(`Тикер ${ticker} не найден.`);
-      saveQuote(db, ticker, quote, new Date().toISOString().slice(0, 10));
-      currency = quote.currency;
+      currency = (await tickerCurrency(ticker)).currency;
     }
     // Актив есть или его нет: уже имеющийся заводится одной единицей по стоимости на старт
     const openingUnits = kind === 'asset' ? (body.openingBalance > 0 ? 1 : 0) : body.openingUnits;
@@ -1356,7 +1358,12 @@ export function buildApp(options: AppOptions) {
       if (kind !== 'cash') throw new DomainError('Ставка бывает только у вклада в основной валюте.');
       saveDeposit(db, Number(id), { rate: body.rate, payout: body.payout as Payout | undefined, rateFrom: body.rateFrom, payoutFirst: body.payoutFirst });
     }
-    if ((kind === 'currency' || kind === 'stock') && options.market) void backfillPotPrices(db, options.market, new Date().toISOString().slice(0, 10));
+    if ((kind === 'currency' || kind === 'stock') && options.market) {
+      // Новая валюта или акция: курсы с начала учёта по дням и цены прошлых месяцев; что не загрузилось, ждёт обновления
+      const market = options.market;
+      const today = new Date().toISOString().slice(0, 10);
+      void backfillRates(db, market, today).then(() => backfillPotPrices(db, market, today));
+    }
     return { id: Number(id) };
   });
 
@@ -1484,6 +1491,19 @@ export function buildApp(options: AppOptions) {
 
   // Покупка или продажа акций по тикеру: количество и цена за штуку в валюте акции. Вклад под тикер заводится сам,
   // сумма в основной валюте считается по курсу на дату сделки, а без него по последнему
+  /** Котировка тикера: из базы, а у источника только для нового тикера (заодно проверка, что он есть) */
+  async function tickerCurrency(ticker: string) {
+    const saved = get<{ price: number; currency: string }>(db, 'SELECT price, currency FROM quotes WHERE ticker = ?', ticker);
+    if (saved) return saved;
+    if (!options.market) throw new DomainError('Котировки недоступны.');
+    const quote = await options.market.quote(ticker).catch(() => {
+      throw new DomainError('Не удалось получить котировку. Попробуй позже.', 502);
+    });
+    if (!quote) throw new DomainError(`Тикер ${ticker} не найден.`);
+    saveQuote(db, ticker, quote, new Date().toISOString().slice(0, 10));
+    return quote;
+  }
+
   // Курс сделки: Нацбанк на дату, а если его нет, последний известный
   async function tradeRate(currency: string, base: string, date: string) {
     if (currency === base) return { rate: 1, onDate: 1 };
@@ -1508,7 +1528,7 @@ export function buildApp(options: AppOptions) {
     let price = 1;
     let priceDate: string | null = null;
     if (q.ticker) {
-      const quote = await stockPriceOn(options.market, q.ticker, q.date, today).catch(() => null);
+      const quote = await stockPriceOn(db, options.market, q.ticker, q.date, today).catch(() => null);
       if (!quote) throw new DomainError(`Нет котировки ${q.ticker}.`, 404);
       ({ currency, price } = quote);
       priceDate = quote.date;
@@ -1540,13 +1560,7 @@ export function buildApp(options: AppOptions) {
     if (!pot && body.side === 'sell') throw new DomainError(`Акций ${body.ticker} в портфеле нет.`);
     let currency = pot?.currency ?? '';
     if (!pot) {
-      if (!options.market) throw new DomainError('Котировки недоступны.');
-      const quote = await options.market.quote(body.ticker).catch(() => {
-        throw new DomainError('Не удалось получить котировку. Попробуй позже.', 502);
-      });
-      if (!quote) throw new DomainError(`Тикер ${body.ticker} не найден.`);
-      saveQuote(db, body.ticker, quote, new Date().toISOString().slice(0, 10));
-      currency = quote.currency;
+      currency = (await tickerCurrency(body.ticker)).currency;
     }
     const { rate, onDate } = await tradeRate(currency, base, body.date);
     const sign = body.side === 'buy' ? 1 : -1;

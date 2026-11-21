@@ -196,6 +196,23 @@ CREATE TABLE IF NOT EXISTS asset_values (
   inactive_at TEXT
 );
 -- Цена единицы вклада за месяц. Обновляется каждый день, а по окончании месяца остаётся ценой на его конец.
+-- Даты, на которые у Нацбанка курсов нет: второй раз за ними не ходим
+CREATE TABLE IF NOT EXISTS fx_missing (
+  date TEXT PRIMARY KEY
+);
+-- Дневные цены закрытия акций: читаются отсюда, у источника запрашиваются раз в сутки
+CREATE TABLE IF NOT EXISTS stock_closes (
+  ticker TEXT NOT NULL,
+  date TEXT NOT NULL,
+  price REAL NOT NULL,
+  currency TEXT NOT NULL,
+  PRIMARY KEY (ticker, date)
+);
+-- Когда курсы и котировки последний раз обновились целиком (ключ updated, значение дата)
+CREATE TABLE IF NOT EXISTS market_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS pot_prices (
   pot_id INTEGER NOT NULL REFERENCES pots(id) ON DELETE CASCADE,
   ym TEXT NOT NULL,

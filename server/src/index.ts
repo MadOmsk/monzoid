@@ -27,6 +27,7 @@ const sendDocument = botToken ? telegramDocumentSender(botToken) : undefined;
 const app = buildApp({
   db,
   market,
+  marketRetry: true,
   botToken,
   botUsername: process.env.BOT_USERNAME?.replace(/^@/, ''),
   ownerIds,

@@ -2,7 +2,11 @@ import { all, get, run, tx, type Db } from './db.js';
 import { assetValuations, assetValue } from './domain.js';
 
 const TIMEOUT_MS = 15_000;
-const CHECK_INTERVAL_MS = 3_600_000;
+const DAY_MS = 86_400_000;
+// Если утреннее обновление не удалось, следующая попытка при заходе в приложение, но не чаще раза в 15 минут
+const RETRY_MS = 15 * 60_000;
+// Сколько дат курсов спрашивать у Нацбанка одновременно при догрузке истории
+const RATE_REQUESTS_AT_ONCE = 6;
 
 export interface Quote {
   price: number;
@@ -110,7 +114,11 @@ export function saveQuote(db: Db, ticker: string, quote: Quote, date: string): v
   );
 }
 
-/** При сбое источника остаются прошлые значения: на экране видно, на какую они дату. */
+/**
+ * Утреннее обновление: курсы Нацбанка за день, котировки и дневные цены отслеживаемых акций, цены вкладов за день,
+ * затем очередь: дни без курсов с начала учёта. При сбое источника остаются прошлые значения
+ * (на экране видно, на какую они дату), а не загруженное догрузится при следующем обновлении.
+ */
 export async function refreshMarket(db: Db, source: MarketSource, today: string): Promise<boolean> {
   let ok = true;
   try {
@@ -135,6 +143,7 @@ export async function refreshMarket(db: Db, source: MarketSource, today: string)
     try {
       const quote = await source.quote(ticker);
       if (quote) saveQuote(db, ticker, quote, today);
+      if (!(await loadCloses(db, source, ticker))) ok = false;
     } catch (e) {
       console.error(`Котировка ${ticker} не обновилась:`, e);
       ok = false;
@@ -144,24 +153,106 @@ export async function refreshMarket(db: Db, source: MarketSource, today: string)
   saveDayPrices(db, today);
   await backfillDayPrices(db, source, today);
   await backfillPotPrices(db, source, today);
+  if (!(await backfillRates(db, source, today))) ok = false;
   return ok;
+}
+
+const updates = new WeakMap<Db, { tried: number; running: Promise<boolean> | null }>();
+
+/** Дата последнего полного обновления курсов и котировок. */
+function updatedOn(db: Db): string | null {
+  return get<{ value: string }>(db, `SELECT value FROM market_state WHERE key = 'updated'`)?.value ?? null;
+}
+
+/**
+ * Обновляет курсы и котировки, если сегодня это ещё не удалось. scheduled: утренний запуск, без ограничения
+ * частоты; иначе это заход в приложение, и попытка не чаще раза в 15 минут. Пока данные не пришли,
+ * везде используются последние сохранённые (вчерашние). Не ждёт окончания.
+ */
+export function freshenMarket(db: Db, source: MarketSource, scheduled = false): Promise<boolean> | null {
+  const today = new Date().toISOString().slice(0, 10);
+  if (updatedOn(db) === today) return null;
+  const state = updates.get(db) ?? { tried: 0, running: null };
+  updates.set(db, state);
+  if (state.running) return state.running;
+  if (!scheduled && Date.now() - state.tried < RETRY_MS) return null;
+  state.tried = Date.now();
+  state.running = refreshMarket(db, source, today)
+    .then((ok) => {
+      if (ok) run(db, `INSERT INTO market_state (key, value) VALUES ('updated', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, today);
+      return ok;
+    })
+    .catch((e) => {
+      console.error('Обновление курсов не удалось:', e);
+      return false;
+    })
+    .finally(() => {
+      state.running = null;
+    });
+  return state.running;
+}
+
+/**
+ * Очередь курсов: каждый день с начала учёта самой ранней базы, где есть валюта или акции, должен быть в fx_history
+ * (или в fx_missing, если у Нацбанка на эту дату курсов нет). Один запрос даёт все валюты на дату.
+ * Если Нацбанк недоступен, остаток ждёт следующего обновления. false, если загрузилось не всё.
+ */
+const backfills = new WeakMap<Db, Promise<boolean>>();
+export function backfillRates(db: Db, source: MarketSource, today: string): Promise<boolean> {
+  const running = backfills.get(db);
+  if (running) return running;
+  const job = (async () => {
+    const start = get<{ ym: string | null }>(
+      db,
+      `SELECT MIN(l.start_ym) ym FROM ledgers l WHERE EXISTS (SELECT 1 FROM pots p WHERE p.ledger_id = l.id AND p.kind IN ('currency', 'stock'))`,
+    )?.ym;
+    if (!start) return true;
+    const known = new Set([
+      ...all<{ date: string }>(db, `SELECT date FROM fx_history WHERE currency = 'KZT' AND date >= ?`, `${start}-01`).map((r) => r.date),
+      ...all<{ date: string }>(db, 'SELECT date FROM fx_missing WHERE date >= ?', `${start}-01`).map((r) => r.date),
+    ]);
+    const missing: string[] = [];
+    for (let date = `${start}-01`; date <= today; date = new Date(Date.parse(date) + DAY_MS).toISOString().slice(0, 10)) {
+      if (!known.has(date)) missing.push(date);
+    }
+    for (let i = 0; i < missing.length; i += RATE_REQUESTS_AT_ONCE) {
+      const results = await Promise.all(missing.slice(i, i + RATE_REQUESTS_AT_ONCE).map((date) => loadRatesOn(db, source, date, today)));
+      // Нацбанк недоступен: остальное подождёт следующего обновления
+      if (results.includes('error')) return false;
+    }
+    return true;
+  })().finally(() => backfills.delete(db));
+  backfills.set(db, job);
+  return job;
 }
 
 /** Загружает курсы на дату один раз. Сбой не мешает: вызывающий возьмёт последний известный курс. */
 export async function ensureRatesOn(db: Db, source: MarketSource, date: string): Promise<boolean> {
-  if (get(db, `SELECT 1 x FROM fx_history WHERE date = ? AND currency = 'KZT'`, date)) return true;
+  return (await loadRatesOn(db, source, date, new Date().toISOString().slice(0, 10))) === 'ok';
+}
+
+/**
+ * Курсы на дату: из базы, а у Нацбанка только если их там нет. Прошлая дата, на которую у Нацбанка курсов нет,
+ * запоминается, чтобы не спрашивать снова; сегодняшних курсов может ещё не быть, их спросим позже.
+ */
+async function loadRatesOn(db: Db, source: MarketSource, date: string, today: string): Promise<'ok' | 'none' | 'error'> {
+  if (get(db, `SELECT 1 x FROM fx_history WHERE date = ? AND currency = 'KZT'`, date)) return 'ok';
+  if (get(db, 'SELECT 1 x FROM fx_missing WHERE date = ?', date)) return 'none';
   try {
     const rates = await source.ratesOn(date);
-    if (!Object.keys(rates).length) return false;
+    if (!Object.keys(rates).length) {
+      if (date < today) run(db, 'INSERT OR IGNORE INTO fx_missing (date) VALUES (?)', date);
+      return 'none';
+    }
     tx(db, () => {
       for (const [currency, value] of Object.entries({ ...rates, KZT: 1 })) {
         run(db, 'INSERT OR REPLACE INTO fx_history (date, currency, kzt_per_unit) VALUES (?, ?, ?)', date, currency, value);
       }
     });
-    return true;
+    return 'ok';
   } catch (e) {
     console.error(`Курсы на ${date} не загрузились:`, e);
-    return false;
+    return 'error';
   }
 }
 
@@ -247,7 +338,7 @@ async function backfillDayPrices(db: Db, source: MarketSource, today: string): P
       let native = 1;
       let currency = pot.currency;
       if (pot.ticker) {
-        const daily = await source.daily(pot.ticker);
+        const daily = await dailyOf(db, source, pot.ticker);
         const close = daily?.closes.filter((c) => c.date < today).at(-1);
         if (!daily || !close) continue;
         ({ date, price: native } = close);
@@ -278,15 +369,21 @@ export function potPriceHistory(db: Db, ledgerId: number) {
   );
 }
 
-/** Обновляет при старте и затем раз в сутки. После сбоя пробует снова через час. */
+/**
+ * Обновляет курсы и котировки каждый день в 05:00 по Астане (полночь UTC) и при запуске, если сегодня ещё не обновляли.
+ * Если не удалось, следующая попытка при заходе в приложение (freshenMarket) или в 05:00 следующего дня.
+ */
 export function startMarketUpdates(db: Db, source: MarketSource): void {
-  let done = '';
-  const check = async () => {
-    const today = new Date().toISOString().slice(0, 10);
-    if (done !== today && (await refreshMarket(db, source, today))) done = today;
+  void freshenMarket(db, source, true);
+  const schedule = () => {
+    const now = Date.now();
+    const next = Math.floor(now / DAY_MS) * DAY_MS + DAY_MS;
+    setTimeout(() => {
+      void freshenMarket(db, source, true);
+      schedule();
+    }, next - now + 1000).unref();
   };
-  void check();
-  setInterval(() => void check(), CHECK_INTERVAL_MS).unref();
+  schedule();
 }
 
 function rate(db: Db, currency: string): { perUsd: number; date: string } | null {
@@ -390,9 +487,6 @@ export function valuePots(db: Db, ledgerId: number): PotValue[] {
 
 // Курсы валют для графика вклада: по неделям за два года
 const QUOTE_WEEKS = 104;
-const RATE_REQUESTS_AT_ONCE = 6;
-// Дневные котировки за год запрашиваются у источника не чаще раза в день
-const dailyCache = new WeakMap<MarketSource, Map<string, { day: string; data: Awaited<ReturnType<MarketSource['daily']>> }>>();
 
 export interface PotQuotes {
   /** Валюта цены: котировки акции или основная валюта базы для курса */
@@ -402,24 +496,41 @@ export interface PotQuotes {
   moves: { id: number; date: string; amount: number; units: number; comment: string; toPotId: number | null; linked: boolean; pairPotId: number | null; salePotId: number | null; price: number | null }[];
 }
 
-/** Дневные цены акции, раз в сутки на тикер. */
-async function dailyOf(source: MarketSource, ticker: string, today: string): ReturnType<MarketSource['daily']> {
-  const cache = dailyCache.get(source) ?? new Map();
-  dailyCache.set(source, cache);
-  let entry = cache.get(ticker);
-  if (entry?.day !== today) {
-    entry = { day: today, data: await source.daily(ticker) };
-    cache.set(ticker, entry);
+/** Загружает дневные цены закрытия акции за год в базу. false, если источник недоступен или тикера нет. */
+async function loadCloses(db: Db, source: MarketSource, ticker: string): Promise<boolean> {
+  try {
+    const data = await source.daily(ticker);
+    if (!data) return false;
+    tx(db, () => {
+      for (const c of data.closes) {
+        run(db, 'INSERT OR REPLACE INTO stock_closes (ticker, date, price, currency) VALUES (?, ?, ?, ?)', ticker, c.date, c.price, data.currency);
+      }
+    });
+    return true;
+  } catch (e) {
+    console.error(`Дневные цены ${ticker} не загрузились:`, e);
+    return false;
   }
-  return entry.data;
 }
 
-/** Цена акции на дату: последнее закрытие не позже даты, а без истории текущая котировка. null, если тикера нет. */
-export async function stockPriceOn(source: MarketSource, ticker: string, date: string, today: string): Promise<(Quote & { date: string }) | null> {
-  const data = await dailyOf(source, ticker, today);
+/** Дневные цены акции из базы; у источника только если их там ещё нет (новый тикер). */
+async function dailyOf(db: Db, source: MarketSource, ticker: string): ReturnType<MarketSource['daily']> {
+  const read = () => all<{ date: string; price: number; currency: string }>(db, 'SELECT date, price, currency FROM stock_closes WHERE ticker = ? ORDER BY date', ticker);
+  let rows = read();
+  if (!rows.length && (await loadCloses(db, source, ticker))) rows = read();
+  if (!rows.length) return null;
+  return { currency: rows[0].currency, closes: rows.map(({ date, price }) => ({ date, price })) };
+}
+
+/** Цена акции на дату: последнее закрытие не позже даты, а без истории котировка из базы. null, если тикера нет. */
+export async function stockPriceOn(db: Db, source: MarketSource, ticker: string, date: string, today: string): Promise<(Quote & { date: string }) | null> {
+  const data = await dailyOf(db, source, ticker);
   const close = data?.closes.filter((c) => c.date <= date).at(-1);
   if (data && close) return { price: close.price, currency: data.currency, date: close.date };
+  const saved = get<{ price: number; currency: string; date: string }>(db, 'SELECT price, currency, date FROM quotes WHERE ticker = ?', ticker);
+  if (saved) return saved;
   const quote = await source.quote(ticker);
+  if (quote) saveQuote(db, ticker, quote, today);
   return quote && { ...quote, date: today };
 }
 
@@ -433,7 +544,7 @@ export async function potQuotes(db: Db, source: MarketSource, potId: number, tod
   let currency = pot.base;
   let points: PotQuotes['points'] = [];
   if (pot.ticker) {
-    const data = await dailyOf(source, pot.ticker, today);
+    const data = await dailyOf(db, source, pot.ticker);
     currency = data?.currency ?? pot.currency;
     points = data?.closes ?? [];
   } else if (pot.kind === 'currency') {
