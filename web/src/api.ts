@@ -187,9 +187,11 @@ export interface Pot {
   day?: { gain: number; since: string } | null;
   /** Депозит: ставка в процентах годовых, период выплаты, дата открытия и ближайшие проценты (due ждёт подтверждения) */
   rate?: number;
-  payout?: 'month' | 'quarter' | 'year';
+  payout?: 'day' | 'month' | 'quarter' | 'year';
   rateFrom?: string;
-  interest?: { due: { from: string; to: string; amount: number } | null; next: string | null };
+  /** Первая выплата, если день выплат не совпадает с днём открытия */
+  payoutFirst?: string | null;
+  interest?: { due: { from: string; to: string; amount: number } | null; remind: boolean; next: string | null };
 }
 export interface AssetValue {
   id: number;

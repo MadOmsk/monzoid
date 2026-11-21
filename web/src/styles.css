@@ -92,6 +92,7 @@ input.amount { font-size: 26px; font-weight: 600; }
 .btn { display: block; width: 100%; text-align: center; padding: 12px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); font-weight: 500; }
 .btn.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
 .btn.danger { color: var(--danger); }
+.link.danger { color: var(--danger); }
 .btn.small { width: auto; flex: none; padding: 8px 12px; border-radius: 10px; font-size: 14px; }
 .row { display: flex; gap: 8px; }
 .stack { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }

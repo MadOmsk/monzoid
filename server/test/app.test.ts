@@ -682,8 +682,8 @@ describe('основная валюта и копилки', () => {
     const report = async (ym: string) => (await call('GET', `${base}/summary?ym=${ym}`)).body.report;
 
     // Пока период не закончился, начислять нечего
-    expect(nextInterest(db, deposit, '2024-02-09')).toEqual({ due: null, next: '2024-02-10' });
-    // 31 день по 12% годовых с миллиона
+    expect(nextInterest(db, deposit, '2024-02-09')).toEqual({ due: null, remind: false, next: '2024-02-10' });
+    // 31 день по 12% годовых с миллиона: внутри периода проценты на проценты не идут
     const first = Math.round((k(1_000_000) * 12) / 100 / 365 * 31);
     expect(nextInterest(db, deposit, '2024-02-15').due).toEqual({ from: '2024-01-10', to: '2024-02-10', amount: first });
     expect((await pot()).interest.due).toMatchObject({ to: '2024-02-10', amount: first });
@@ -718,6 +718,50 @@ describe('основная валюта и копилки', () => {
     expect((await pot()).interest.due).toMatchObject({ from: '2024-02-10', to: '2024-03-10' });
     expect((await call('PATCH', `${base}/pots/${deposit}`, { rate: null })).status).toBe(200);
     expect((await pot()).interest).toBeUndefined();
+  });
+
+  it('депозит со ставкой сразу при создании: первая выплата не в день открытия', async () => {
+    const { db, call } = start();
+    const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2024-01' })).body.id}`;
+    // Первая выплата раньше открытия или позже периода не принимается
+    expect((await call('POST', `${base}/pots`, { name: 'Плохой', kind: 'cash', rate: 12, payout: 'month', rateFrom: '2024-01-10', payoutFirst: '2024-01-05' })).status).toBe(400);
+    expect((await call('POST', `${base}/pots`, { name: 'Плохой', kind: 'cash', rate: 12, payout: 'month', rateFrom: '2024-01-10', payoutFirst: '2024-03-01' })).status).toBe(400);
+    const created = await call('POST', `${base}/pots`, { name: 'Депозит', kind: 'cash', openingBalance: k(1_000_000), rate: 12, payout: 'month', rateFrom: '2024-01-10', payoutFirst: '2024-01-25' });
+    expect(created.status).toBe(200);
+    const id = created.body.id;
+    expect((await call('GET', `${base}/pots`)).body.find((p: any) => p.id === id)).toMatchObject({ rate: 12, payout: 'month', payoutFirst: '2024-01-25' });
+    // Первый период короче: с 10 по 25 января, дальше по 25-м числам
+    expect(nextInterest(db, id, '2024-01-30').due).toEqual({ from: '2024-01-10', to: '2024-01-25', amount: Math.round((k(1_000_000) * 12) / 100 / 365 * 15) });
+    expect(nextInterest(db, id, '2024-02-20')).toMatchObject({ due: { to: '2024-01-25' } });
+    await call('POST', `${base}/pots/${id}/interest`, { to: '2024-01-25' });
+    expect(nextInterest(db, id, '2024-02-20')).toEqual({ due: null, remind: false, next: '2024-02-25' });
+    // Квартальное начисление: от первой выплаты каждые три месяца
+    await call('PATCH', `${base}/pots/${id}`, { payout: 'quarter' });
+    expect(nextInterest(db, id, '2024-02-20')).toEqual({ due: null, remind: false, next: '2024-04-25' });
+
+    // Каждый день: проценты и на вчерашние проценты, начислить можно по сегодня, напоминание раз в месяц
+    const daily = (await call('POST', `${base}/pots`, { name: 'Ежедневный', kind: 'cash', openingBalance: k(1_000_000), rate: 12, payout: 'day', rateFrom: '2024-01-10', payoutFirst: '2024-01-25' })).body.id;
+    expect((await call('GET', `${base}/pots`)).body.find((p: any) => p.id === daily)).toMatchObject({ payout: 'day', payoutFirst: null });
+    let total = 0;
+    for (let i = 0; i < 5; i++) total += ((k(1_000_000) + total) * 12) / 100 / 365;
+    expect(nextInterest(db, daily, '2024-01-15')).toEqual({ due: { from: '2024-01-10', to: '2024-01-15', amount: Math.round(total) }, remind: false, next: '2024-01-16' });
+    expect(nextInterest(db, daily, '2024-02-10')).toMatchObject({ remind: true });
+    expect(nextInterest(db, daily, '2024-01-10')).toEqual({ due: null, remind: false, next: '2024-01-11' });
+  });
+
+  it('пустой вклад удаляется, вклад с записями нет', async () => {
+    const { call } = start();
+    const base = `/api/ledgers/${(await call('POST', '/api/ledgers', { name: 'Семья', startYm: '2024-01' })).body.id}`;
+    const empty = (await call('POST', `${base}/pots`, { name: 'Пустой', kind: 'cash', rate: 10, rateFrom: '2024-01-10' })).body.id;
+    const opened = (await call('POST', `${base}/pots`, { name: 'Со стартом', kind: 'cash', openingBalance: k(100) })).body.id;
+    const used = (await call('POST', `${base}/pots`, { name: 'С переводом', kind: 'cash' })).body.id;
+    const move = (await call('POST', `${base}/pots/${used}/moves`, { date: '2024-01-15', amount: k(50), units: 0, comment: '' })).body.id;
+    await call('DELETE', `${base}/pots/${used}/moves/${move}`);
+    expect((await call('DELETE', `${base}/pots/${opened}`)).status).toBe(400);
+    // Снятая запись тоже держит вклад: на неё ссылается история изменений
+    expect((await call('DELETE', `${base}/pots/${used}`)).status).toBe(400);
+    expect((await call('DELETE', `${base}/pots/${empty}`)).status).toBe(200);
+    expect((await call('GET', `${base}/pots`)).body.map((p: any) => p.name).sort()).toEqual(['С переводом', 'Со стартом']);
   });
 
   it('сделки вклада правятся и снимаются, в закрытом месяце через журнал; вклад переименовывается', async () => {

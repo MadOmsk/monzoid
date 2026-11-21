@@ -448,6 +448,10 @@ export function openDb(path: string): Db {
     db.exec('ALTER TABLE pots ADD COLUMN rate_from TEXT');
     db.exec('ALTER TABLE pots ADD COLUMN interest_skipped TEXT');
   }
+  if (!all<{ name: string }>(db, 'PRAGMA table_info(pots)').some((c) => c.name === 'payout_first')) {
+    // Депозит: дата первой выплаты, если день выплат не совпадает с днём открытия
+    db.exec('ALTER TABLE pots ADD COLUMN payout_first TEXT');
+  }
   const batchColumns = all<{ name: string }>(db, 'PRAGMA table_info(import_batches)');
   if (!batchColumns.some((c) => c.name === 'draft')) {
     // Черновик проверки выписки сохраняется при каждом изменении; sent_at отмечает отправку в учёт

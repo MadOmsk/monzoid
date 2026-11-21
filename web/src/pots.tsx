@@ -10,7 +10,94 @@ const FOREIGN_CURRENCIES = ['USD', 'EUR', 'RUB', 'GBP', 'CNY', 'TRY', 'AED', 'KZ
 
 const KIND_TITLES: [Pot['kind'], string][] = [['currency', 'Валюта'], ['stock', 'Акции'], ['asset', 'Активы'], ['cash', 'Деньги в основной валюте']];
 
-const PAYOUT_WORDS: Record<NonNullable<Pot['payout']>, string> = { month: 'раз в месяц', quarter: 'раз в квартал', year: 'раз в год' };
+type Payout = NonNullable<Pot['payout']>;
+const PAYOUT_WORDS: Record<Payout, string> = { day: 'каждый день', month: 'раз в месяц', quarter: 'раз в квартал', year: 'раз в год' };
+
+/** Первая выплата: ближайшее после открытия число day; null, если оно совпадает с днём открытия (выплаты от него). */
+function firstPayout(from: string, day: number): string | null {
+  const [y, m, d] = from.split('-').map(Number);
+  if (day === d) return null;
+  const at = (year: number, month: number) => {
+    const last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    return `${year}-${String(month).padStart(2, '0')}-${String(Math.min(day, last)).padStart(2, '0')}`;
+  };
+  const same = at(y, m);
+  return same > from ? same : m === 12 ? at(y + 1, 1) : at(y, m + 1);
+}
+
+/**
+ * Поля депозита для нового вклада и карточки: номинальная ставка, как часто начисляются проценты, дата открытия
+ * и когда выплата: у ежедневного ничего, у ежемесячного число месяца, у квартального и годового дата первой выплаты.
+ * optional: пустая ставка значит обычный вклад без процентов, остальные поля тогда скрыты.
+ */
+function useDepositForm(optional = false) {
+  const [rate, setRate] = useState('');
+  const [payout, setPayout] = useState<Payout>('month');
+  const [from, setFrom] = useState(today());
+  const [day, setDay] = useState('');
+  const [first, setFirst] = useState('');
+  const load = (pot: Pot) => {
+    setRate(pot.rate ? String(pot.rate).replace('.', ',') : '');
+    setPayout(pot.payout ?? 'month');
+    setFrom(pot.rateFrom ?? today());
+    setDay(pot.payoutFirst ? String(Number(pot.payoutFirst.slice(8))) : '');
+    setFirst(pot.payoutFirst ?? '');
+  };
+  /** Поля запроса, null для обычного вклада или текст ошибки */
+  const body = (): { rate: number; payout: Payout; rateFrom: string; payoutFirst: string | null } | null | string => {
+    if (optional && !rate.trim()) return null;
+    const value = parseUnits(rate);
+    if (!value || value <= 0 || value > 100) return 'Укажи ставку, например 14,5.';
+    if (payout === 'day') return { rate: value, payout, rateFrom: from, payoutFirst: null };
+    if (payout !== 'month') return { rate: value, payout, rateFrom: from, payoutFirst: first || null };
+    const n = day.trim() ? Number(day) : null;
+    if (n !== null && (!Number.isInteger(n) || n < 1 || n > 31)) return 'День выплаты это число месяца от 1 до 31.';
+    return { rate: value, payout, rateFrom: from, payoutFirst: n === null ? null : firstPayout(from, n) };
+  };
+  const shown = !optional || !!rate.trim();
+  const fields = (
+    <>
+      <label className="field">
+        <span>Номинальная ставка, % годовых{optional && ', если это депозит'}</span>
+        <input inputMode="decimal" placeholder={optional ? 'Без процентов' : '14,5'} value={rate} onChange={(e) => setRate(numberInput(e.target.value, { decimals: 4 }))} />
+      </label>
+      {shown && (
+        <>
+          <p className="muted small">Номинальная ставка из договора, а не эффективная (ГЭСВ): эффективная уже включает капитализацию, и проценты по ней посчитаются завышенными.</p>
+          <label className="field">
+            <span>Начисление процентов</span>
+            <select value={payout} onChange={(e) => setPayout(e.target.value as Payout)}>
+              <option value="day">Каждый день</option>
+              <option value="month">Раз в месяц</option>
+              <option value="quarter">Раз в квартал</option>
+              <option value="year">Раз в год</option>
+            </select>
+          </label>
+          <div className="field"><span>Дата открытия: проценты идут со следующего дня</span><DateInput label="Дата открытия" value={from} onChange={setFrom} /></div>
+          {payout === 'month' && (
+            <label className="field">
+              <span>День выплаты, число месяца</span>
+              <input inputMode="numeric" placeholder={`Как день открытия: ${Number(from.slice(8))}`} value={day} onChange={(e) => setDay(e.target.value.replace(/\D/g, '').slice(0, 2))} />
+            </label>
+          )}
+          {(payout === 'quarter' || payout === 'year') && (
+            <div className="field">
+              <span>Дата первой выплаты, если не через {payout === 'quarter' ? 'квартал' : 'год'} от открытия</span>
+              <DateInput label="Дата первой выплаты" value={first} min={from} onChange={setFirst} />
+            </div>
+          )}
+          <p className="muted small">
+            {payout === 'day'
+              ? 'Проценты считаются и прибавляются каждый день, поэтому каждый день идут и на вчерашние. Набежавшая сумма видна в карточке вклада, начислить её можно когда удобно, напоминание раз в месяц.'
+              : 'Проценты считаются каждый день с остатка, а в день выплаты сумма за период прибавляется к вкладу и дальше тоже приносит проценты. Первый период может быть короче: от открытия до первой выплаты.'}
+            {' '}Каждое начисление нужно подтвердить, сумму можно поправить по банку.
+          </p>
+        </>
+      )}
+    </>
+  );
+  return { load, body, fields };
+}
 
 function shortDate(date: string): string {
   return dayMonth(date, true);
@@ -28,7 +115,10 @@ function potFacts(p: Pot): string {
   if (p.kind === 'stock') return `${p.ticker} · ${amount(p.units, 4)} шт.${p.price !== null ? ` · ${amount(p.price)} ${symbol(p.currency)}` : ''}`;
   if (p.kind === 'currency') return `${amount(p.units)} ${symbol(p.currency)}${p.price !== null ? ` · курс ${amount(p.price)}` : ''}`;
   if (p.kind === 'asset') return p.units <= 0 ? 'Продан' : p.valuedAt ? `Оценка на ${shortDate(p.valuedAt)}` : 'По уплаченной сумме';
-  if (p.rate) return `Депозит ${amount(p.rate)}% · ${p.interest?.due ? 'проценты ждут подтверждения' : p.interest?.next ? `выплата ${shortDate(p.interest.next)}` : PAYOUT_WORDS[p.payout ?? 'month']}`;
+  if (p.rate) {
+    const state = p.interest?.due && p.interest.remind ? 'проценты ждут подтверждения' : p.payout !== 'day' && p.interest?.next ? `выплата ${shortDate(p.interest.next)}` : `начисление ${PAYOUT_WORDS[p.payout ?? 'month']}`;
+    return `Депозит ${amount(p.rate)}% · ${state}`;
+  }
   return 'В основной валюте';
 }
 
@@ -123,7 +213,7 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
     <>
       {data.length === 0 && <p className="muted">Вкладов пока нет. Их можно завести ниже на каждой вкладке: валюту, акции, активы вроде квартиры и машины или деньги в основной валюте.</p>}
       {data.length > 0 && shown.length === 0 && <p className="muted">Здесь пока ничего нет, первый можно завести ниже.</p>}
-      {data.filter((p) => p.interest?.due).map((p) => (
+      {data.filter((p) => p.interest?.due && p.interest.remind).map((p) => (
         <button key={p.id} type="button" className="banner warn as-button" onClick={() => { setOpenId(p.id); window.scrollTo(0, 0); }}>
           Проценты по вкладу «{p.name}» за {shortDate(p.interest!.due!.from)} – {shortDate(p.interest!.due!.to)} ждут подтверждения: {money(p.interest!.due!.amount)}
         </button>
@@ -228,6 +318,7 @@ function PotDetail({ base, pot, isAdmin, onChanged, onBack, onOpenPot }: { base:
       <Header title={pot.name} onBack={onBack} />
       <p className="muted small">{potFacts(pot)}</p>
       {isAdmin && <RenamePot base={base} pot={pot} onChanged={onChanged} />}
+      {isAdmin && data && !data.moves.length && pot.balance === 0 && pot.units === 0 && <DeletePot base={base} pot={pot} onDeleted={async () => { onBack(); await onChanged(); }} />}
       {isAdmin && <OpeningEditor base={base} pot={pot} onChanged={async () => { await Promise.all([reload(), onChanged()]); }} />}
       <div className="tiles">
         <div className="tile"><span>Стоимость</span><strong>{pot.value !== null ? money(pot.value) : 'нет курса'}</strong><small>вложено {money(pot.balance)}</small></div>
@@ -364,6 +455,7 @@ function AssetDetail({ base, pot, isAdmin, userId, ym, onChanged, onBack }: { ba
       <Header title={pot.name} onBack={onBack} />
       <p className="muted small">{potFacts(pot)}</p>
       {isAdmin && <RenamePot base={base} pot={pot} onChanged={onChanged} />}
+      {isAdmin && deals.data && !deals.data.moves.length && values.data && !values.data.length && pot.balance === 0 && <DeletePot base={base} pot={pot} onDeleted={async () => { onBack(); await onChanged(); }} />}
       <div className="tiles">
         <div className="tile"><span>Стоимость</span><strong>{money(pot.value ?? 0)}</strong>{owned && <small>{pot.valuedAt ? `оценка на ${shortDate(pot.valuedAt)}` : 'оценки ещё нет'}</small>}</div>
         <div className="tile"><span>{owned ? 'Уплачено' : 'Итог сделок'}</span><strong>{money(owned ? pot.balance : -pot.balance)}</strong><small>{owned ? 'покупка и вложения' : 'продажа минус покупка'}</small></div>
@@ -459,9 +551,7 @@ function decimalInput(value: number, digits: number): string {
  */
 function Deposit({ base, pot, isAdmin, onChanged }: { base: string; pot: Pot; isAdmin: boolean; onChanged: () => Promise<void> }) {
   const [editing, setEditing] = useState(false);
-  const [rate, setRate] = useState('');
-  const [payout, setPayout] = useState<NonNullable<Pot['payout']>>('month');
-  const [from, setFrom] = useState(today());
+  const form = useDepositForm();
   const [sum, setSum] = useState('');
   const [error, setError] = useState<string | null>(null);
   const due = pot.interest?.due ?? null;
@@ -478,9 +568,9 @@ function Deposit({ base, pot, isAdmin, onChanged }: { base: string; pot: Pot; is
     }
   }
   const saveSettings = () => {
-    const value = parseUnits(rate);
-    if (!value || value <= 0) return setError('Укажи ставку, например 14,5.');
-    return run(() => api.patch(`${base}/pots/${pot.id}`, { rate: value, payout, rateFrom: from }));
+    const body = form.body();
+    if (typeof body === 'string' || !body) return setError(body || 'Укажи ставку.');
+    return run(() => api.patch(`${base}/pots/${pot.id}`, body));
   };
   const confirm = () => {
     const value = sum.trim() ? parseMoney(sum) : due!.amount;
@@ -497,17 +587,7 @@ function Deposit({ base, pot, isAdmin, onChanged }: { base: string; pot: Pot; is
       <div className="stack">
         <h2>Депозит</h2>
         {error && <Banner kind="error">{error}</Banner>}
-        <p className="muted small">Номинальная ставка годовых. Проценты считаются за каждый день с остатка на вкладе и прибавляются к нему в день выплаты, поэтому следующий период считается уже с ними. Начисление каждый раз нужно подтвердить.</p>
-        <label className="field"><span>Ставка, % годовых</span><input inputMode="decimal" value={rate} onChange={(e) => setRate(numberInput(e.target.value, { decimals: 4 }))} /></label>
-        <label className="field">
-          <span>Выплата процентов</span>
-          <select value={payout} onChange={(e) => setPayout(e.target.value as NonNullable<Pot['payout']>)}>
-            <option value="month">Раз в месяц</option>
-            <option value="quarter">Раз в квартал</option>
-            <option value="year">Раз в год</option>
-          </select>
-        </label>
-        <div className="field"><span>Дата открытия: от неё идут периоды</span><DateInput label="Дата открытия" value={from} onChange={setFrom} /></div>
+        {form.fields}
         <div className="inline-form">
           <Button small onClick={saveSettings}>Сохранить</Button>
           {pot.rate && <Button small onClick={() => run(() => api.patch(`${base}/pots/${pot.id}`, { rate: null }))}>Не депозит</Button>}
@@ -518,9 +598,7 @@ function Deposit({ base, pot, isAdmin, onChanged }: { base: string; pot: Pot; is
   }
 
   const open = () => {
-    setRate(pot.rate ? String(pot.rate).replace('.', ',') : '');
-    setPayout(pot.payout ?? 'month');
-    setFrom(pot.rateFrom ?? today());
+    form.load(pot);
     setError(null);
     setEditing(true);
   };
@@ -529,8 +607,10 @@ function Deposit({ base, pot, isAdmin, onChanged }: { base: string; pot: Pot; is
     <div className="stack">
       {error && <Banner kind="error">{error}</Banner>}
       {due && (
-        <div className="banner warn stack">
-          <span>Проценты за {shortDate(due.from)} – {shortDate(due.to)} по ставке {amount(pot.rate)}%: <b>{money(due.amount)}</b>. Если в банке другая сумма, впиши её.</span>
+        <div className={`banner ${pot.interest?.remind ? 'warn' : 'info'} stack`}>
+          <span>
+            {pot.payout === 'day' ? `Набежало с ${shortDate(due.from)} по сегодня` : `Проценты за ${shortDate(due.from)} – ${shortDate(due.to)}`} по ставке {amount(pot.rate)}%: <b>{money(due.amount)}</b>. Если в банке другая сумма, впиши её.
+          </span>
           {isAdmin && (
             <div className="inline-form wrap">
               <input aria-label="Проценты" inputMode="decimal" placeholder={toGroupedInput(due.amount)} value={sum} onChange={(e) => setSum(numberInput(e.target.value))} />
@@ -541,8 +621,8 @@ function Deposit({ base, pot, isAdmin, onChanged }: { base: string; pot: Pot; is
         </div>
       )}
       <p className="muted small">
-        Депозит {amount(pot.rate)}% годовых, выплата {PAYOUT_WORDS[pot.payout ?? 'month']} с {shortDate(pot.rateFrom!)}
-        {!due && pot.interest?.next && `, следующая ${shortDate(pot.interest.next)}`}.{' '}
+        Депозит {amount(pot.rate)}% годовых, начисление {PAYOUT_WORDS[pot.payout ?? 'month']}, открыт {shortDate(pot.rateFrom!)}
+        {pot.payout !== 'day' && !due && pot.interest?.next && `, следующая выплата ${shortDate(pot.interest.next)}`}.{' '}
         {isAdmin && <button type="button" className="link" onClick={open}>Изменить</button>}
       </p>
     </div>
@@ -670,6 +750,26 @@ function OpeningEditor({ base, pot, onChanged }: { base: string; pot: Pot; onCha
         <Button small onClick={() => setEditing(false)}>Отмена</Button>
       </div>
     </div>
+  );
+}
+
+/** Пустой вклад, в котором ни разу ничего не было, можно удалить; сервер ещё раз проверит, что записей нет. */
+function DeletePot({ base, pot, onDeleted }: { base: string; pot: Pot; onDeleted: () => Promise<void> }) {
+  const [error, setError] = useState<string | null>(null);
+  async function remove() {
+    if (!(await confirmAction(`Удалить пустой вклад «${pot.name}»?`))) return;
+    try {
+      await api.del(`${base}/pots/${pot.id}`);
+      await onDeleted();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  return (
+    <>
+      {error && <Banner kind="error">{error}</Banner>}
+      <button type="button" className="link danger" onClick={remove}>Удалить вклад</button>
+    </>
   );
 }
 
@@ -1142,6 +1242,7 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
   const [openingUnits, setOpeningUnits] = useState('');
   const [pot, setPot] = useState<number | ''>('');
   const selected = pots.find((p) => p.id === pot);
+  const deposit = useDepositForm(true);
 
   async function run(fn: () => Promise<unknown>) {
     try {
@@ -1159,7 +1260,9 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
     const balance = openingBalance.trim() ? parseMoney(openingBalance) : 0;
     const count = kind !== 'cash' && kind !== 'asset' && openingUnits.trim() ? parseUnits(openingUnits) : 0;
     if (balance === null || count === null) return setError('Проверь стартовые суммы.');
-    const body = { name, kind, openingBalance: balance, openingUnits: count, ...(kind === 'currency' ? { currency } : {}), ...(kind === 'stock' ? { ticker } : {}) };
+    const rate = kind === 'cash' ? deposit.body() : null;
+    if (typeof rate === 'string') return setError(rate);
+    const body = { name, kind, openingBalance: balance, openingUnits: count, ...(kind === 'currency' ? { currency } : {}), ...(kind === 'stock' ? { ticker } : {}), ...(rate ?? {}) };
     if (await run(() => api.post(`${base}/pots`, body))) {
       setName('');
       setTicker('');
@@ -1189,7 +1292,7 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
       <details className="section">
         <summary>{{ currency: 'Новый вклад в валюте', stock: 'Новые акции', cash: 'Новый депозит', asset: 'Новый актив' }[tab]}</summary>
         <div className="section-body">
-          {tab === 'cash' && <p className="muted small">Депозит, накопительный счёт или просто отложенные деньги в основной валюте. Ставку и выплату процентов можно указать в карточке вклада.</p>}
+          {tab === 'cash' && <p className="muted small">Депозит, накопительный счёт или просто отложенные деньги в основной валюте. Если есть ставка, проценты посчитаются сами и будут ждать подтверждения.</p>}
           <div className="inline-form wrap">
             <input aria-label="Название вклада" placeholder="Название" value={name} onChange={(e) => setName(e.target.value)} />
             {kind === 'currency' && (
@@ -1207,6 +1310,7 @@ function PotsManager({ base, tab, pots, baseCurrency, onChanged }: { base: strin
               onChange={(e) => setOpeningBalance(numberInput(e.target.value))}
             />
           </div>
+          {kind === 'cash' && deposit.fields}
           <p className="muted small">{kind === 'asset' ? 'Уже имеющийся актив входит в общий итог с первого месяца базы и не списывается со свободных средств. Новый заводится без суммы, а потом покупается переводом.' : kind === 'cash' ? 'Сумма, которая уже лежала на старте учёта. Она не списывается со свободных средств, но входит в общий итог.' : `Заполни, только если ${kind === 'stock' ? 'акции были' : 'валюта была'} до начала учёта: «Есть» это сколько у тебя сейчас, «Заплачено» сколько ${symbol()} ты за это отдал, от этого считается доход. Со свободных средств это не списывается. Если будешь покупать в приложении, оставь поля пустыми.`}</p>
           <Button small onClick={create}>Создать</Button>
         </div>
