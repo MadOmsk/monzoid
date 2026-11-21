@@ -283,6 +283,8 @@ fieldset.plain { display: contents; border: 0; padding: 0; margin: 0; min-width:
 .legend i.dashed { height: 0; background: none; border-top: 2px dashed; border-radius: 0; }
 .pot-group { display: flex; flex-direction: column; gap: 6px; }
 .pot-group .fund-top { align-items: baseline; }
+.pot-group .fund-bottom { align-items: baseline; margin-top: 2px; }
+.pot-group .pot-value { font-size: 14.5px; font-weight: 600; color: var(--text); }
 .pot-group h2 { margin: 6px 0 0; }
 .pot-group-sum { margin: -4px 0 2px; }
 .chart-readout { display: flex; flex-wrap: wrap; gap: 2px 12px; min-height: 40px; margin: 6px 0; font-size: 13px; }

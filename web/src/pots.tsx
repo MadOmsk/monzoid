@@ -173,15 +173,19 @@ function PotsView({ base, isAdmin, userId, currency, months = [], currentYm }: {
             <ul className="tag-rank">
               {group.map((p) => {
                 const gain = p.value !== null ? p.value - p.balance : 0;
+                const value = p.value !== null ? money(p.value) : 'нет курса';
+                // У валюты сверху количество в её валюте, под ним стоимость в основной
+                const fx = p.kind === 'currency';
                 return (
                   <li key={p.id}>
                     <button type="button" onClick={() => { setOpenId(p.id); window.scrollTo(0, 0); }}>
-                      <div className="fund-top"><span className="entry-title">{p.name}</span><b>{p.value !== null ? money(p.value) : 'нет курса'}</b></div>
+                      <div className="fund-top"><span className="entry-title">{p.name}</span><b>{fx ? `${amount(p.units)} ${symbol(p.currency)}` : value}</b></div>
                       <div className="fund-bottom muted">
-                        <span>{potFacts(p)}</span>
-                        {p.kind === 'asset' && p.units > 0 && <span>уплачено {money(p.balance)}</span>}
-                        {p.kind !== 'cash' && p.kind !== 'asset' && <span>вложено {money(p.balance)}{p.balance > 0 && <> · <Gain gain={gain} ratio={gain / p.balance} /></>}</span>}
+                        <span>{fx ? (p.price !== null ? `курс ${amount(p.price)}` : '') : potFacts(p)}</span>
+                        {fx && <span className="pot-value">{value}</span>}
                       </div>
+                      {p.kind === 'asset' && p.units > 0 && <div className="fund-bottom muted"><span>уплачено {money(p.balance)}</span></div>}
+                      {p.kind !== 'cash' && p.kind !== 'asset' && <div className="fund-bottom muted"><span>вложено {money(p.balance)}{p.balance > 0 && <> · <Gain gain={gain} ratio={gain / p.balance} /></>}</span></div>}
                     </button>
                   </li>
                 );
