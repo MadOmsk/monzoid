@@ -52,9 +52,8 @@ export function MonthScreen({ base, ledgerName, userId, ym, currentYm, onYm, onF
   const toClose = lastClosed ? shiftYm(lastClosed, 1) : startYm;
   const remindClose = isAdmin && toClose < currentYm;
   const fundsShown = report.funds.filter((f) => f.planned || f.spent);
-  // В открытом месяце план входит в фонд по дням: в остатке только прожитая часть плана
+  // В открытом месяце план показывается по дням: прожитая часть и весь
   const unlived = report.closed ? 0 : 1 - planShare(ym);
-  const inFund = (f: { balanceAfter: number; planned: number }) => f.balanceAfter - Math.round(f.planned * unlived);
   const notPlanned = report.funds.filter((f) => !f.planned && !f.spent);
   const left = report.plannedTotal - report.spentTotal;
   const saved = report.income - report.spentTotal - (report.assetCosts ?? 0);
@@ -170,6 +169,16 @@ export function MonthScreen({ base, ledgerName, userId, ym, currentYm, onYm, onF
       {fundsShown.length === 0 && (
         <p className="muted">В этом месяце ещё нет плана. {isAdmin ? 'Задай лимиты по фондам.' : 'Его задаёт администратор.'}</p>
       )}
+      {fundsShown.length > 0 && (
+        <p className="muted small">
+          <b>Справа</b>: остаток плана за месяц.<br />
+          <b>В фонде</b>: {report.closed
+            ? 'конверт фонда на конец этого месяца.'
+            : lastClosed
+              ? `конверт с остатками по ${monthName(lastClosed).toLowerCase()} и переносами. Открытый месяц добавится после закрытия.`
+              : 'стартовый остаток и переносы. Месяц добавится после закрытия.'}
+        </p>
+      )}
       <ul className="fund-list">
         {fundsShown.map((f) => {
           const share = f.planned > 0 ? Math.min(f.spent / f.planned, 1) : f.spent > 0 ? 1 : 0;          return (
@@ -182,7 +191,7 @@ export function MonthScreen({ base, ledgerName, userId, ym, currentYm, onYm, onF
                 <div className="bar" aria-hidden><i className={f.delta < 0 ? 'over' : ''} style={{ width: `${Math.max(share * 100, 0)}%` }} /></div>
                 <div className="fund-bottom muted">
                   <span>{money(f.spent)} из {money(f.planned)}</span>
-                  <span>в фонде <span className={tone(inFund(f))}>{money(inFund(f))}</span></span>
+                  <span>в фонде <span className={tone(f.envelope)}>{money(f.envelope)}</span></span>
                 </div>
                 {data.paceAlerts.some((a) => a.fundId === f.id) && <div className="pace-note">⚠ Тратится быстрее нормы</div>}
               </button>

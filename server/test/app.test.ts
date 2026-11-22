@@ -161,6 +161,34 @@ describe('расчёт месяца', () => {
     expect(report.freeBefore).toBe(k(-100));
   });
 
+  it('конверт фонда пополняется только закрытием месяца, перенос виден сразу', async () => {
+    const { call } = setup();
+    const { base, fund } = await ledger(call);
+    const food = fund('Еда');
+    await call(1, 'PATCH', `${base}/funds/${food}`, { openingBalance: k(1_000) });
+    await call(1, 'PUT', `${base}/plans/2026-10`, { items: [{ fundId: food, amount: k(100) }] });
+    await call(1, 'POST', `${base}/entries`, { date: '2026-10-05', kind: 'expense', amount: k(300), fundId: food });
+    const envelope = async (ym: string, id = food) =>
+      (await call(1, 'GET', `${base}/summary?ym=${ym}`)).body.report.funds.find((f: any) => f.id === id).envelope;
+
+    // Ничего не закрыто: стартовый остаток, в том числе через незакрытый прошлый месяц
+    expect(await envelope('2026-10')).toBe(k(1_000));
+    expect(await envelope('2026-11')).toBe(k(1_000));
+
+    await call(1, 'POST', `${base}/months/2026-10/close`);
+    expect(await envelope('2026-10')).toBe(k(800));
+    await call(1, 'POST', `${base}/entries`, { date: '2026-11-05', kind: 'expense', amount: k(50), fundId: food });
+    expect(await envelope('2026-11')).toBe(k(800));
+
+    expect((await call(1, 'POST', `${base}/transfers`, { date: '2026-11-06', amount: k(200), fromFundId: food, toFundId: fund('Авто') })).status).toBe(200);
+    expect(await envelope('2026-11')).toBe(k(600));
+    expect(await envelope('2026-11', fund('Авто'))).toBe(k(200));
+    expect(await envelope('2026-12')).toBe(k(600));
+
+    await call(1, 'POST', `${base}/months/2026-11/close`);
+    expect(await envelope('2026-11')).toBe(k(650));
+  });
+
   it('копилка забирает деньги из свободных, а общий итог не меняется', async () => {
     const { call } = setup();
     const { base } = await ledger(call);

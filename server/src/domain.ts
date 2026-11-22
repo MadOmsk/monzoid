@@ -28,6 +28,8 @@ export interface MonthFund {
   /** Переносы остатка за месяц: пришло минус ушло */
   moved: number;
   balanceAfter: number;
+  /** Конверт фонда: остаток на конец последнего закрытого месяца и переносы после него */
+  envelope: number;
 }
 
 export interface MonthReport {
@@ -194,6 +196,8 @@ export function buildReports(db: Db, ledgerId: number, toYm: string): MonthRepor
   const spentMap = new Map(spent.map((s) => [`${s.ym}|${s.fund_id}`, s.total]));
 
   const balances = new Map(funds.map((f) => [f.id, f.opening_balance]));
+  // Конверты пополняются только закрытием месяца. Перенос остатка двигает деньги между ними сразу
+  const envelopes = new Map(balances);
   // Стартовые свободные задаются корректировкой первого месяца
   let free = 0;
   const reports: MonthReport[] = [];
@@ -209,12 +213,15 @@ export function buildReports(db: Db, ledgerId: number, toYm: string): MonthRepor
       const moved = movedMap.get(`${ym}|${fund.id}`) ?? 0;
       const balanceBefore = balances.get(fund.id)!;
       const delta = planned - fundSpent;
-      balances.set(fund.id, balanceBefore + delta + moved);
+      const balanceAfter = balanceBefore + delta + moved;
+      balances.set(fund.id, balanceAfter);
+      const envelope = closed.has(ym) ? balanceAfter : envelopes.get(fund.id)! + moved;
+      envelopes.set(fund.id, envelope);
       plannedTotal += planned;
       spentTotal += fundSpent;
       movedTotal += moved;
       if (!fund.archived || planned || fundSpent || moved || balanceBefore) {
-        monthFunds.push({ id: fund.id, name: fund.name, planned, spent: fundSpent, delta, balanceBefore, moved, balanceAfter: balanceBefore + delta + moved });
+        monthFunds.push({ id: fund.id, name: fund.name, planned, spent: fundSpent, delta, balanceBefore, moved, balanceAfter, envelope });
       }
     }
     const income = incomeMap.get(ym) ?? 0;

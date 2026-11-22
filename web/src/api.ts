@@ -126,6 +126,8 @@ export interface MonthFund {
   /** Переносы остатка за месяц: пришло минус ушло */
   moved: number;
   balanceAfter: number;
+  /** Конверт фонда: остаток на конец последнего закрытого месяца и переносы после него */
+  envelope: number;
 }
 export interface MonthReport {
   ym: string;
